@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --c-primary: 236 72 153;
+    --c-primary-soft: 253 242 248;
+    --c-accent: 249 168 212;
+    --c-accent-soft: 252 231 243;
+    --c-bg: 255 247 240;
+    --c-surface: 255 255 255;
+    --c-ink: 61 43 36;
+    --c-ink-soft: 145 124 112;
+    --c-line: 242 228 218;
+  }
+
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply bg-background text-ink;
+  }
+
+  ::selection {
+    background: rgb(var(--c-primary) / 0.25);
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--c-accent) / 0.6);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--c-accent));
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+.theme-soft-pink {
+  --c-primary: 236 72 153;
+  --c-primary-soft: 253 242 248;
+  --c-accent: 249 168 212;
+  --c-accent-soft: 252 231 243;
+  --c-bg: 255 247 240;
+  --c-surface: 255 255 255;
+  --c-ink: 61 43 36;
+  --c-ink-soft: 145 124 112;
+  --c-line: 242 228 218;
+}
+
+.theme-lavender {
+  --c-primary: 139 92 246;
+  --c-primary-soft: 245 243 255;
+  --c-accent: 196 181 253;
+  --c-accent-soft: 237 233 254;
+  --c-bg: 249 246 255;
+  --c-surface: 255 255 255;
+  --c-ink: 60 44 79;
+  --c-ink-soft: 141 125 163;
+  --c-line: 233 227 248;
+}
+
+.theme-soft-blue {
+  --c-primary: 64 132 245;
+  --c-primary-soft: 239 246 255;
+  --c-accent: 147 197 253;
+  --c-accent-soft: 219 234 254;
+  --c-bg: 246 250 255;
+  --c-surface: 255 255 255;
+  --c-ink: 43 55 78;
+  --c-ink-soft: 138 152 176;
+  --c-line: 226 236 250;
+}
+
+.theme-mint {
+  --c-primary: 16 124 105;
+  --c-primary-soft: 236 253 245;
+  --c-accent: 110 231 183;
+  --c-accent-soft: 209 250 229;
+  --c-bg: 244 252 248;
+  --c-surface: 255 255 255;
+  --c-ink: 40 66 55;
+  --c-ink-soft: 126 153 142;
+  --c-line: 224 244 236;
+}
+
+.theme-peach {
+  --c-primary: 234 106 32;
+  --c-primary-soft: 255 247 237;
+  --c-accent: 253 186 116;
+  --c-accent-soft: 255 237 213;
+  --c-bg: 255 248 243;
+  --c-surface: 255 255 255;
+  --c-ink: 71 52 36;
+  --c-ink-soft: 160 132 110;
+  --c-line: 245 232 222;
+}
+
+.theme-cream {
+  --c-primary: 133 97 62;
+  --c-primary-soft: 250 246 240;
+  --c-accent: 210 186 150;
+  --c-accent-soft: 243 236 224;
+  --c-bg: 251 248 243;
+  --c-surface: 255 255 255;
+  --c-ink: 74 60 47;
+  --c-ink-soft: 150 130 110;
+  --c-line: 237 228 216;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-line bg-surface shadow-soft;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-line bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition placeholder:text-ink-soft/70 focus:border-primary focus:ring-2 focus:ring-primary/25;
+  }
+
+  .label {
+    @apply mb-1.5 block text-sm font-semibold text-ink;
+  }
+
+  .table-wrap-scroll {
+    @apply overflow-x-auto;
+  }
+}
