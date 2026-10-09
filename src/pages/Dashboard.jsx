@@ -50,7 +50,7 @@ export default function Dashboard() {
   const [picked, setPicked] = useState(null);
 
   const highlights = products.filter(
-    (p) => p.featured || p.promo || p.buyOneGetOne || p.advertisement
+    (p) => p.featured || p.promo || p.advertisement
   );
 
   return (
@@ -236,7 +236,8 @@ export default function Dashboard() {
           </div>
           {highlights.length > 0 && (
             <Link
-              to="/barang"
+              to="/stok"
+              state={{ infoTab: true }}
               className="inline-flex items-center gap-1 text-xs font-bold text-primary hover:underline"
             >
               Lihat semua <ChevronRight className="h-3.5 w-3.5" />
@@ -249,7 +250,7 @@ export default function Dashboard() {
             <EmptyState
               icon={Sparkles}
               title="Belum ada barang istimewa"
-              description="Tandai barang sebagai Unggulan, Promo, Buy 1 Get 1, atau Iklan dari halaman Barang."
+              description="Tandai barang sebagai Unggulan, Promo, atau Iklan dari halaman Barang."
             />
           </div>
         ) : (

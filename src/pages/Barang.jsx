@@ -2,14 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
-  FileText,
-  Gift,
   Package,
   PackagePlus,
   Pencil,
   Plus,
-  Star,
-  Tag,
   Trash2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
@@ -39,15 +35,6 @@ import StorePicker from '../components/StorePicker';
 
 const PAGE_SIZE = 8;
 
-const CAT_FILTERS = [
-  { id: 'semua', label: 'Semua' },
-  { id: 'makanan', label: 'Makanan' },
-  { id: 'minuman', label: 'Minuman' },
-  { id: 'cemilan', label: 'Cemilan' },
-  { id: 'sembako', label: 'Sembako' },
-  { id: 'lainnya', label: 'Lainnya' },
-];
-
 const STOCK_FILTERS = [
   { id: 'semua', label: 'Semua' },
   { id: 'tersedia', label: 'Tersedia' },
@@ -55,14 +42,19 @@ const STOCK_FILTERS = [
   { id: 'habis', label: 'Habis' },
 ];
 
-// Kelompokkan kategori bebas ke 5 cabang filter cepat.
-const categoryGroup = (cat) => {
-  const c = String(cat || '').toLowerCase();
-  if (/cemilan|ringan|snack/.test(c)) return 'cemilan';
-  if (/makanan|masakan|nasi|berat/.test(c)) return 'makanan';
-  if (/minuman|minum/.test(c)) return 'minuman';
-  if (/sembako|pokok/.test(c)) return 'sembako';
-  return 'lainnya';
+// Sumber data kategori aplikasi: nilai "category" pada data produk (tidak ada registry kategori terpisah).
+// Daftar opsi harus selalu diturunkan dari sini agar kategori baru langsung muncul tanpa ubah kode.
+const distinctCategories = (products) => {
+  const seen = new Set();
+  const list = [];
+  for (const p of products || []) {
+    const c = (p.category || '').trim();
+    if (c && !seen.has(c)) {
+      seen.add(c);
+      list.push(c);
+    }
+  }
+  return list.sort((a, b) => a.localeCompare(b, 'id'));
 };
 
 const stockStatus = (product, qty) => {
@@ -78,7 +70,7 @@ const STOCK_BADGE = {
 };
 
 export default function Barang() {
-  const { products, stores, saveProduct, updateProduct, deleteProduct, createStore, stockOfProduct, baseNameOf, pushToast } = useApp();
+  const { products, stores, saveProduct, deleteProduct, createStore, stockOfProduct, baseNameOf, pushToast } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
   const [search, setSearch] = useState('');
@@ -89,9 +81,6 @@ export default function Barang() {
   const [editing, setEditing] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [detail, setDetail] = useState(null);
-  const [infoTab, setInfoTab] = useState('unggulan');
-  const [infoSearch, setInfoSearch] = useState('');
-  const [deleteInfoTarget, setDeleteInfoTarget] = useState(null);
 
   // Quick action "Edit Barang" dari halaman lain: buka form barang ini.
   useEffect(() => {
@@ -107,10 +96,12 @@ export default function Barang() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
 
+  const categoryOptions = useMemo(() => [{ id: 'semua', label: 'Semua' }, ...distinctCategories(products).map((c) => ({ id: c, label: c }))], [products]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return products.filter((p) => {
-      if (cat !== 'semua' && categoryGroup(p.category) !== cat) return false;
+      if (cat !== 'semua' && (p.category || '').trim() !== cat) return false;
       if (stok !== 'semua') {
         const st = stockOfProduct(p.id);
         if (stockStatus(p, st ? st.quantity : 0) !== stok) return false;
@@ -193,8 +184,6 @@ export default function Barang() {
       advertisement: !!data.advertisement,
       advertisementDescription: data.adDesc || '',
       featured: !!data.featured,
-      buyOneGetOne: !!data.buyOneGetOne,
-      b1g1Description: data.b1g1Desc || '',
       description: data.description || '',
     });
     pushToast(editing ? 'Barang berhasil diperbarui' : 'Barang berhasil ditambahkan');
@@ -225,37 +214,44 @@ export default function Barang() {
         </Btn>
       </PageHeader>
 
-      {/* Filter cepat: kategori + status stok */}
+      {/* Filter: kategori (dinamis dari data produk) + status stok */}
       <div className="card mb-4 p-3">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-[11px] font-bold uppercase tracking-wider text-ink-soft">Kategori</span>
-          {CAT_FILTERS.map((c) => (
-            <FilterChip
-              key={c.id}
-              active={cat === c.id}
-              onClick={() => {
-                setCat(c.id);
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="block min-w-[10rem] flex-1 sm:max-w-xs">
+            <span className="label">Kategori</span>
+            <select
+              data-testid="filter-kategori"
+              value={cat}
+              onChange={(e) => {
+                setCat(e.target.value);
                 setPage(1);
               }}
+              className="input w-full pr-9"
             >
-              {c.label}
-            </FilterChip>
-          ))}
-        </div>
-        <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-line pt-2.5">
-          <span className="mr-1 text-[11px] font-bold uppercase tracking-wider text-ink-soft">Stok</span>
-          {STOCK_FILTERS.map((s) => (
-            <FilterChip
-              key={s.id}
-              active={stok === s.id}
-              onClick={() => {
-                setStok(s.id);
-                setPage(1);
-              }}
-            >
-              {s.label}
-            </FilterChip>
-          ))}
+              {categoryOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-[11px] font-bold uppercase tracking-wider text-ink-soft">Stok</span>
+              {STOCK_FILTERS.map((s) => (
+                <FilterChip
+                  key={s.id}
+                  active={stok === s.id}
+                  onClick={() => {
+                    setStok(s.id);
+                    setPage(1);
+                  }}
+                >
+                  {s.label}
+                </FilterChip>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -428,54 +424,6 @@ export default function Barang() {
           />
         </div>
       )}
-
-      <InfoBarang
-        tab={infoTab}
-        setTab={setInfoTab}
-        products={products}
-        stores={stores}
-        search={infoSearch}
-        setSearch={setInfoSearch}
-        onToggle={updateProduct}
-        onEdit={(p) => {
-          setEditing(p);
-          setFormOpen(true);
-        }}
-        onAddNew={() => {
-          setEditing(null);
-          setFormOpen(true);
-        }}
-        onPreview={setDetail}
-        onDeleteInfo={(p, tab) => setDeleteInfoTarget({ product: p, tab })}
-      />
-
-      <ConfirmModal
-        open={!!deleteInfoTarget}
-        onClose={() => setDeleteInfoTarget(null)}
-        title="Hapus Informasi Barang"
-        message={
-          deleteInfoTarget
-            ? `Hapus info ${deleteInfoTarget.tab?.label?.toLowerCase()} dari “${deleteInfoTarget.product.name}”? Barang master tetap tersimpan di daftar Barang.`
-            : ''
-        }
-        confirmLabel="Hapus Info"
-        danger
-        onConfirm={() => {
-          if (deleteInfoTarget) {
-            const tab = deleteInfoTarget.tab;
-            const patch = tab.id === 'promo'
-              ? { promo: false, promoTitle: '', promoDescription: '' }
-              : tab.id === 'b1g1'
-              ? { buyOneGetOne: false, b1g1Description: '' }
-              : tab.id === 'deskripsi'
-              ? { description: '' }
-              : { featured: false };
-            updateProduct(deleteInfoTarget.product.id, patch);
-            pushToast(`Info ${tab.label.toLowerCase()} dihapus — barang tetap tersimpan`);
-          }
-          setDeleteInfoTarget(null);
-        }}
-      />
 
       <ProductFormModal
         open={formOpen}
@@ -660,7 +608,8 @@ function unitBaseName(p) {
 }
 
 function ProductFormModal({ open, onClose, editing, onSave }) {
-  const { stores } = useApp();
+  const { stores, products } = useApp();
+  const categorySuggestions = useMemo(() => distinctCategories(products), [products]);
   const [name, setName] = useState('');
   const [category, setCategory] = useState('');
   const [image, setImage] = useState('');
@@ -673,8 +622,6 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
   const [advertisement, setAdvertisement] = useState(false);
   const [adDesc, setAdDesc] = useState('');
   const [featured, setFeatured] = useState(false);
-  const [buyOneGetOne, setBuyOneGetOne] = useState(false);
-  const [b1g1Desc, setB1g1Desc] = useState('');
   const [description, setDescription] = useState('');
   const [errors, setErrors] = useState({});
 
@@ -707,8 +654,6 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
       setAdvertisement(!!editing.advertisement);
       setAdDesc(editing.advertisementDescription || '');
       setFeatured(!!editing.featured);
-      setBuyOneGetOne(!!editing.buyOneGetOne);
-      setB1g1Desc(editing.b1g1Description || '');
       setDescription(editing.description || '');
     } else {
       setName('');
@@ -723,8 +668,6 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
       setAdvertisement(false);
       setAdDesc('');
       setFeatured(false);
-      setBuyOneGetOne(false);
-      setB1g1Desc('');
       setDescription('');
     }
     setErrors({});
@@ -779,8 +722,6 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
       advertisement,
       adDesc,
       featured,
-      buyOneGetOne,
-      b1g1Desc,
       description,
     });
   };
@@ -829,7 +770,7 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
             </Field>
             <Field
               label="Kategori"
-              hint="Opsional. contoh: Sembako, Minuman. Saran cepat: Makanan, Minuman, Cemilan, Sembako, Lainnya."
+              hint="Opsional. Saran otomatis dari Kategori barang yang sudah ada; mengetik nilai baru akan menciptakan kategori baru."
               error={errors.category}
             >
               <Input
@@ -839,7 +780,7 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
                 list="barang-kategori"
               />
               <datalist id="barang-kategori">
-                {['Makanan', 'Minuman', 'Cemilan', 'Sembako', 'Lainnya'].map((k) => (
+                {categorySuggestions.map((k) => (
                   <option key={k} value={k} />
                 ))}
               </datalist>
@@ -969,13 +910,12 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
           <div className="mt-4 grid gap-x-5 gap-y-3 sm:grid-cols-2">
             <Toggle checked={featured} onChange={setFeatured} label="Barang Unggulan" />
             <Toggle checked={promo} onChange={setPromo} label="Promo" />
-            <Toggle checked={buyOneGetOne} onChange={setBuyOneGetOne} label="Buy 1 Get 1" />
             <Toggle checked={advertisement} onChange={setAdvertisement} label="Iklan Promo" />
           </div>
           <div className="mt-4 space-y-4">
             {featured && (
               <p className="rounded-xl bg-primary-soft/50 px-3.5 py-2.5 text-xs text-ink-soft">
-                Barang ini tampil di tab <b>Barang Unggulan</b> pada halaman Barang.
+                Barang ini tampil di tab <b>Informasi Barang</b> pada halaman Stok.
               </p>
             )}
             {promo && (
@@ -995,15 +935,6 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
                   />
                 </Field>
               </>
-            )}
-            {buyOneGetOne && (
-              <Field label="Deskripsi Buy 1 Get 1">
-                <Textarea
-                  value={b1g1Desc}
-                  onChange={(e) => setB1g1Desc(e.target.value)}
-                  placeholder="contoh: Beli 1 dus Mie, GRATIS 2 bungkus."
-                />
-              </Field>
             )}
             {advertisement && (
               <Field label="Deskripsi Iklan">
@@ -1025,264 +956,5 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
         </section>
       </div>
     </Modal>
-  );
-}
-
-const INFO_TABS = [
-  {
-    id: 'unggulan',
-    label: 'Barang Unggulan',
-    icon: Star,
-    field: 'featured',
-    empty: 'Belum ada barang unggulan',
-    helper: 'Tandai barang sebagai unggulan melalui form barang agar tampil di sini.',
-  },
-  {
-    id: 'promo',
-    label: 'Promo',
-    icon: Tag,
-    field: 'promo',
-    empty: 'Belum ada barang berpromo',
-    helper: 'Aktifkan “Promo” pada form barang untuk masuk daftar ini.',
-  },
-  {
-    id: 'b1g1',
-    label: 'Buy 1 Get 1',
-    icon: Gift,
-    field: 'buyOneGetOne',
-    empty: 'Belum ada penawaran Buy 1 Get 1',
-    helper: 'Aktifkan “Buy 1 Get 1” pada form barang beserta deskripsinya.',
-  },
-  {
-    id: 'deskripsi',
-    label: 'Deskripsi Produk',
-    icon: FileText,
-    field: null,
-    empty: 'Belum ada deskripsi produk',
-    helper: 'Isi kolom “Deskripsi Produk” pada form barang agar tampil di sini.',
-  },
-];
-
-const infoText = (p, tab) => {
-  if (tab.id === 'promo') return p.promoDescription || 'Ada promo menarik untuk barang ini.';
-  if (tab.id === 'b1g1') return p.b1g1Description || 'Penawaran beli satu, gratis satu.';
-  if (tab.id === 'deskripsi') return p.description;
-  return 'Barang ditandai sebagai unggulan.';
-};
-
-function InfoBarang({
-  tab,
-  setTab,
-  products,
-  stores,
-  search,
-  setSearch,
-  onToggle,
-  onEdit,
-  onAddNew,
-  onPreview,
-  onDeleteInfo,
-}) {
-  const { stockOfProduct, baseNameOf } = useApp();
-  const active = INFO_TABS.find((t) => t.id === tab) || INFO_TABS[0];
-  const q = (search || '').trim().toLowerCase();
-  const rows = products
-    .filter((p) => (active.field ? !!p[active.field] : !!(p.description && p.description.trim())))
-    .filter(
-      (p) =>
-        !q ||
-        p.name.toLowerCase().includes(q) ||
-        (p.category || '').toLowerCase().includes(q) ||
-        (active.id === 'promo' && (p.promoTitle || '').toLowerCase().includes(q)) ||
-        infoText(p, active).toLowerCase().includes(q) ||
-        p.storeIds.some((id) => stores.find((s) => s.id === id)?.name.toLowerCase().includes(q))
-    );
-
-  const switchTab = (id) => {
-    setTab(id);
-    setSearch('');
-  };
-
-  return (
-    <section className="mt-6 card overflow-hidden">
-      <div className="border-b border-line bg-primary-soft/40 px-4 py-3">
-        <p className="text-[11px] font-bold uppercase tracking-wide text-primary">Informasi Barang</p>
-        <p className="text-xs text-ink-soft">
-          Kategori info barang (Unggulan / Promo / Buy 1 Get 1 / Deskripsi). Dikelola manual per barang{" "}
-          <b>Barang Master</b>; info tetap tampil walau stok 0 atau toko pemasok dihapus. Menonaktifkan info ≠
-          menghapus barang.
-        </p>
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 pt-3">
-        <div className="flex flex-wrap gap-2">
-          {INFO_TABS.map((t) => {
-            const activeTab = t.id === active.id;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => switchTab(t.id)}
-                className={cx(
-                  'inline-flex items-center gap-1.5 rounded-t-xl border border-b-0 px-3.5 py-2 text-xs font-bold transition',
-                  activeTab
-                    ? 'border-line bg-white text-primary'
-                    : 'border-transparent text-ink-soft hover:bg-primary-soft/50 hover:text-ink'
-                )}
-              >
-                <t.icon className="h-3.5 w-3.5" />
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="pb-0.5">
-          <SearchInput
-            value={search || ''}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Cari di tab ini..."
-            className="w-full sm:w-64"
-          />
-        </div>
-      </div>
-
-      <div className="p-4">
-        {rows.length === 0 ? (
-          <EmptyState
-            icon={active.icon}
-            title={search ? 'Tidak ditemukan' : active.empty}
-            description={search ? 'Coba kata kunci lain di tab ini.' : active.helper}
-            action={
-              !search && (
-                <Btn size="sm" icon={Plus} onClick={onAddNew}>
-                  Tambah Barang
-                </Btn>
-              )
-            }
-          />
-        ) : (
-          <TableWrap minWidth="min-w-[760px]">
-            <thead className="border-b border-line bg-primary-soft/50">
-              <tr>
-                <TH>No</TH>
-                <TH>Barang</TH>
-                <TH>Stok Warung</TH>
-                <TH>Toko</TH>
-                <TH>Keterangan</TH>
-                <TH className="text-right">Status & Aksi</TH>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {rows.map((p, i) => {
-                const storeNames = p.storeIds
-                  .map((id) => stores.find((s) => s.id === id)?.name)
-                  .filter(Boolean);
-                const shown = storeNames.slice(0, 2);
-                const infoOn = active.field ? !!p[active.field] : !!(p.description && p.description.trim());
-                const stock = stockOfProduct(p.id);
-                const stockBase = stock ? Number(stock.quantity) || 0 : 0;
-                return (
-                  <tr key={p.id} className="bg-white transition hover:bg-primary-soft/40">
-                    <TD className="text-ink-soft">{i + 1}</TD>
-                    <TD>
-                      <div className="flex items-center gap-2.5">
-                        <ProductImage product={p} size="sm" onClick={() => onPreview(p)} />
-                        <div className="min-w-0">
-                          <button
-                            type="button"
-                            onClick={() => onPreview(p)}
-                            className="max-w-[180px] truncate text-left text-sm font-bold text-ink hover:text-primary"
-                          >
-                            {p.name}
-                          </button>
-                          <p className="text-[11px] text-ink-soft">Satuan dasar: {unitBaseName(p)}</p>
-                        </div>
-                      </div>
-                    </TD>
-                    <TD>
-                      <p
-                        className={cx(
-                          'text-sm font-bold',
-                          stockBase <= 0 ? 'text-rose-500' : 'text-ink'
-                        )}
-                      >
-                        {qtyText(p.units, stockBase)}
-                      </p>
-                      <p className="text-[11px] text-ink-soft">{baseNameOf(p)}</p>
-                    </TD>
-                    <TD>
-                      <div className="flex flex-wrap gap-1">
-                        {shown.map((n) => (
-                          <Chip key={n} tone="soft">
-                            {n}
-                          </Chip>
-                        ))}
-                        {storeNames.length > shown.length && (
-                          <Chip tone="neutral">+{storeNames.length - shown.length}</Chip>
-                        )}
-                      </div>
-                    </TD>
-                    <TD>
-                      {active.id === 'promo' && p.promoTitle ? (
-                        <p className="text-xs font-bold text-ink">{p.promoTitle}</p>
-                      ) : null}
-                      <p className="max-w-xs text-xs leading-relaxed text-ink">{infoText(p, active)}</p>
-                      {p.category && <p className="mt-0.5 text-[11px] text-ink-soft">Kategori: {p.category}</p>}
-                    </TD>
-                    <TD>
-                      <div className="flex items-center justify-end gap-2.5">
-                        {active.field ? (
-                          <span
-                            className={cx(
-                              'inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold transition',
-                              infoOn
-                                ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
-                                : 'bg-line/60 text-ink-soft hover:bg-line'
-                            )}
-                            title={infoOn ? 'Klik untuk menonaktifkan info' : 'Klik untuk mengaktifkan info'}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onToggle(p.id, { [active.field]: !infoOn });
-                            }}
-                          >
-                            <span
-                              className={cx(
-                                'h-1.5 w-1.5 rounded-full',
-                                infoOn ? 'bg-emerald-500' : 'bg-ink-soft/50'
-                              )}
-                            />
-                            {infoOn ? 'Aktif' : 'Nonaktif'}
-                          </span>
-                        ) : (
-                          <Chip tone="neutral">Terisi</Chip>
-                        )}
-                        {infoOn && (
-                          <button
-                            type="button"
-                            title="Hapus info (barang tetap tersimpan)"
-                            onClick={() => onDeleteInfo(p, active)}
-                            className="rounded-lg p-2 text-ink-soft transition hover:bg-rose-50 hover:text-rose-500"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => onEdit(p)}
-                          title="Edit barang"
-                          className="rounded-lg p-2 text-ink-soft transition hover:bg-primary-soft hover:text-primary"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </TD>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </TableWrap>
-        )}
-      </div>
-    </section>
   );
 }

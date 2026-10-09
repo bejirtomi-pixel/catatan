@@ -2,7 +2,6 @@ import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   CheckCircle2,
-  Gift,
   History,
   Megaphone,
   Package,
@@ -80,7 +79,6 @@ export default function ProductDetailModal({
   const infoRows = [
     { id: 'featured', label: 'Unggulan', on: !!product.featured, icon: Star },
     { id: 'promo', label: 'Promo', on: !!product.promo, icon: Tag },
-    { id: 'b1g1', label: 'Buy 1 Get 1', on: !!product.buyOneGetOne, icon: Gift },
     { id: 'iklan', label: 'Iklan Promo', on: !!product.advertisement, icon: Megaphone },
   ];
   const infoDetail =
@@ -89,11 +87,6 @@ export default function ProductDetailModal({
         <b>{product.promoTitle}</b>
         {product.promoTitle && product.promoDescription ? ' — ' : ''}
         {product.promoDescription}
-      </p>
-    )) ||
-    (product.buyOneGetOne && product.b1g1Description && (
-      <p className="mt-1 rounded-lg bg-sky-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-sky-800">
-        {product.b1g1Description}
       </p>
     )) ||
     null;
@@ -282,7 +275,7 @@ export default function ProductDetailModal({
           </>
         ) : (
           <p className="text-xs text-ink-soft">
-            Tidak ada informasi khusus. Kelola lewat menu Edit Barang.
+            Tidak ada informasi khusus. Kelola lewat tab Informasi Barang di halaman Stok.
           </p>
         )}
       </div>

@@ -29,7 +29,6 @@ export function productFlags(product) {
   const flags = [];
   if (product.featured) flags.push({ label: 'Unggulan', cls: 'bg-amber-100 text-amber-700', icon: Star });
   if (product.promo) flags.push({ label: 'Promo', cls: 'bg-violet-100 text-violet-700', icon: Tag });
-  if (product.buyOneGetOne) flags.push({ label: 'Buy 1 Get 1', cls: 'bg-sky-100 text-sky-700', icon: Gift });
   if (product.advertisement) flags.push({ label: 'Iklan', cls: 'bg-orange-100 text-orange-700', icon: Megaphone });
   return flags;
 }

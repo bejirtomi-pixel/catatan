@@ -39,8 +39,6 @@ const migrateProduct = (p) => {
   return {
     ...out,
     featured: !!out.featured,
-    buyOneGetOne: !!out.buyOneGetOne,
-    b1g1Description: out.b1g1Description || '',
     description: out.description || '',
     promo: !!out.promo,
     advertisement: !!out.advertisement,
@@ -48,6 +46,15 @@ const migrateProduct = (p) => {
     promoDescription: out.promoDescription || '',
     advertisementDescription: out.advertisementDescription || '',
   };
+};
+
+// Fitur Buy 1 Get 1 dihapus total. Sapu sisa field pada data lama agar tidak membisukan logika apa pun.
+const stripBuyOneGetOne = (p) => {
+  if (p && typeof p === 'object' && 'buyOneGetOne' in p) {
+    const { buyOneGetOne, b1g1Description, ...rest } = p;
+    return rest;
+  }
+  return p;
 };
 
 const migrateOrderItem = (it) => ({
@@ -107,6 +114,19 @@ const migrateStocks = (stocks, products) => {
   });
 };
 
+const migrateStorePrice = (sp) => {
+  if (!sp || typeof sp !== 'object') return null;
+  if (!sp.storeId || !sp.productId || !sp.unitId) return null;
+  return {
+    id: sp.id || uid('sp-'),
+    storeId: sp.storeId,
+    productId: sp.productId,
+    unitId: sp.unitId,
+    price: round2(Number(sp.price) || 0),
+    updatedAt: sp.updatedAt || '',
+  };
+};
+
 /* ---------- Konteks ---------- */
 const AppContext = createContext(null);
 
@@ -114,9 +134,15 @@ export function AppProvider({ children }) {
   const seed = useMemo(() => buildSeed(), []);
   const [stores, setStores] = useState(() => load('stores', seed.stores));
   const [products, setProducts] = useState(() =>
-    load('products', seed.products).map(migrateProduct).filter(Boolean)
+    load('products', seed.products)
+      .map(migrateProduct)
+      .map(stripBuyOneGetOne)
+      .filter(Boolean)
   );
   const [orders, setOrders] = useState(() => load('orders', seed.orders).map(migrateOrder));
+  const [storePrices, setStorePrices] = useState(() =>
+    load('storePrices', []).map(migrateStorePrice).filter(Boolean)
+  );
   const [stocks, setStocks] = useState(() => migrateStocks(load('stocks', seed.stocks), products));
   const [movements, setMovements] = useState(() => load('movements', seed.movements));
   const [shortages, setShortages] = useState(() => load('shortages', seed.shortages));
@@ -127,6 +153,7 @@ export function AppProvider({ children }) {
   useEffect(() => save('stores', stores), [stores]);
   useEffect(() => save('products', products), [products]);
   useEffect(() => save('orders', orders), [orders]);
+  useEffect(() => save('storePrices', storePrices), [storePrices]);
   useEffect(() => save('stocks', stocks), [stocks]);
   useEffect(() => save('movements', movements), [movements]);
   useEffect(() => save('shortages', shortages), [shortages]);
@@ -154,6 +181,52 @@ export function AppProvider({ children }) {
     if (!product || !Array.isArray(product.units)) return 'pcs';
     const base = product.units.find((x) => x.factor === 1);
     return base ? base.name : product.units[0].name;
+  }, []);
+
+  // Harga referensi pembelian per relasi barang-pemasok.
+  // Prioritas: override harga pemasok (wm_v1_storePrices) -> harga master produk.
+  const priceOfStore = useCallback(
+    (storeId, productId, unitId) => {
+      const sp = storePrices.find(
+        (x) => x.storeId === storeId && x.productId === productId && x.unitId === unitId
+      );
+      if (sp) return Number(sp.price) || 0;
+      const p = products.find((x) => x.id === productId);
+      const u = (p?.units || []).find((x) => x.id === unitId);
+      return u ? Number(u.price) || 0 : 0;
+    },
+    [storePrices, products]
+  );
+
+  const saveStorePrices = useCallback((storeId, entries) => {
+    setStorePrices((prev) => {
+      const rest = prev.filter((x) => x.storeId !== storeId);
+      const next = rest.slice();
+      for (const e of entries) {
+        const price = round2(Number(e.price) || 0);
+        if (!(price > 0)) continue;
+        const found = next.find(
+          (x) => x.storeId === storeId && x.productId === e.productId && x.unitId === e.unitId
+        );
+        if (found) {
+          next[next.indexOf(found)] = {
+            ...found,
+            price,
+            updatedAt: new Date().toISOString(),
+          };
+        } else {
+          next.push({
+            id: uid('sp-'),
+            storeId,
+            productId: e.productId,
+            unitId: e.unitId,
+            price,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+      return next;
+    });
   }, []);
 
   const upsertStock = useCallback((prev, data, mode = 'set') => {
@@ -207,6 +280,7 @@ export function AppProvider({ children }) {
       setProducts((prev) =>
         prev.map((p) => (p.storeIds.includes(id) ? { ...p, storeIds: p.storeIds.filter((x) => x !== id) } : p))
       );
+      setStorePrices((prev) => prev.filter((x) => x.storeId !== id));
       return { ok: true };
     },
     [orders]
@@ -252,6 +326,7 @@ export function AppProvider({ children }) {
     setProducts((prev) => prev.filter((p) => p.id !== id));
     setStocks((prev) => prev.filter((s) => s.productId !== id));
     setShortages((prev) => prev.filter((x) => x.productId !== id));
+    setStorePrices((prev) => prev.filter((x) => x.productId !== id));
   }, []);
 
   const updateProduct = useCallback((id, patch) => {
@@ -517,6 +592,7 @@ export function AppProvider({ children }) {
     setStores(seed.stores);
     setProducts(seed.products.map(migrateProduct));
     setOrders(seed.orders.map(migrateOrder));
+    setStorePrices([]);
     setStocks(seed.stocks);
     setMovements(seed.movements);
     setShortages(seed.shortages);
@@ -557,6 +633,7 @@ export function AppProvider({ children }) {
     stores,
     products,
     orders,
+    storePrices,
     stocks,
     movements,
     shortages,
@@ -573,6 +650,8 @@ export function AppProvider({ children }) {
     productsOfStore,
     stockOfProduct,
     baseNameOf,
+    priceOfStore,
+    saveStorePrices,
     createStore,
     updateStore,
     deleteStore,

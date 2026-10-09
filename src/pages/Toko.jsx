@@ -10,6 +10,7 @@ import {
   Save,
   ShoppingCart,
   Store,
+  Tag,
   Trash2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
@@ -40,6 +41,8 @@ export default function Toko() {
     updateStore,
     deleteStore,
     createOrder,
+    priceOfStore,
+    saveStorePrices,
     pushToast,
   } = useApp();
   const navigate = useNavigate();
@@ -71,6 +74,7 @@ export default function Toko() {
           if (cartStoreId && cartStoreId !== target.id && cart.length > 0) {
             setPendingStoreId(target.id);
           } else {
+            const price = priceOfStore(target.id, p.id, unit.id);
             setStoreId(target.id);
             setCartStoreId(target.id);
             setCart((prev) => {
@@ -82,8 +86,8 @@ export default function Toko() {
                 unitName: unit.name,
                 unitFactor: unit.factor,
                 quantity: 1,
-                priceRef: Number(unit.price),
-                priceActual: Number(unit.price),
+                priceRef: price || Number(unit.price),
+                priceActual: price || Number(unit.price),
               });
               return next;
             });
@@ -94,11 +98,12 @@ export default function Toko() {
       setStoreId(target.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.state]);
+  }, [location.state, stores, products, priceOfStore, cartStoreId, cart.length]);
 
   const [addOpen, setAddOpen] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [priceOpen, setPriceOpen] = useState(false);
 
   const storeList = useMemo(() => {
     const q = storeFilter.trim().toLowerCase();
@@ -117,7 +122,7 @@ export default function Toko() {
     const unit = (product.units || []).find((u) => u.id === unitId);
     if (!unit || qtyNum <= 0) return;
     if (cartStoreId && cartStoreId !== storeId) return;
-    const priceRef = Number(unit.price);
+    const priceRef = priceOfStore(storeId, product.id, unitId) || Number(unit.price);
     const actual = Number(priceActual) > 0 ? Number(priceActual) : priceRef;
     setCart((prev) => {
       const next = prev.filter((c) => c.productId !== product.id);
@@ -210,6 +215,9 @@ export default function Toko() {
                   <span className="hidden text-xs font-semibold text-ink-soft sm:inline">
                     {productsOfStore.length} barang
                   </span>
+                  <Btn variant="soft" size="sm" icon={Tag} onClick={() => setPriceOpen(true)}>
+                    Kelola Harga
+                  </Btn>
                   <select
                     value={storeId || ''}
                     onChange={(e) => changeStore(e.target.value)}
@@ -240,6 +248,8 @@ export default function Toko() {
               </div>
             ) : storeId ? (
               <OrderTable
+                key={storeId}
+                storeId={storeId}
                 productsOfStore={productsOfStore}
                 onAdd={addToCart}
                 onPreview={(p) => setDetail(p)}
@@ -348,6 +358,13 @@ export default function Toko() {
         onConfirm={confirmSwitch}
       />
 
+      <ManagePriceModal
+        key={priceOpen ? storeId : 'closed'}
+        open={priceOpen}
+        initialStoreId={storeId}
+        onClose={() => setPriceOpen(false)}
+      />
+
       <StoreFormModal
         open={addOpen}
         title="Tambah Toko"
@@ -426,6 +443,7 @@ export default function Toko() {
             setPendingStoreId(target.id);
             return;
           }
+          const price = priceOfStore(target.id, p.id, unit.id);
           setStoreId(target.id);
           setCartStoreId(target.id);
           setCart((prev) => {
@@ -437,8 +455,8 @@ export default function Toko() {
               unitName: unit.name,
               unitFactor: unit.factor,
               quantity: 1,
-              priceRef: Number(unit.price),
-              priceActual: Number(unit.price),
+              priceRef: price || Number(unit.price),
+              priceActual: price || Number(unit.price),
             });
             return next;
           });
@@ -449,14 +467,15 @@ export default function Toko() {
   );
 }
 
-function OrderTable({ productsOfStore, onAdd, onPreview }) {
+function OrderTable({ storeId, productsOfStore, onAdd, onPreview }) {
+  const { priceOfStore } = useApp();
   const [sel, setSel] = useState({});
   const [prices, setPrices] = useState({});
 
   const setUnit = (product, unitId) => {
     const unit = (product.units || []).find((u) => u.id === unitId) || product.units[0];
     setSel((prev) => ({ ...prev, [product.id]: { ...prev[product.id], unitId } }));
-    setPrices((prev) => ({ ...prev, [product.id]: String(unit ? unit.price : '') }));
+    setPrices((prev) => ({ ...prev, [product.id]: String(priceOfStore(storeId, product.id, unitId) || (unit ? unit.price : '')) }));
   };
 
   return (
@@ -477,7 +496,8 @@ function OrderTable({ productsOfStore, onAdd, onPreview }) {
           const units = p.units || [];
           const unitId = sel[p.id]?.unitId || (units.length > 1 ? units[units.length - 1].id : units[0]?.id);
           const qty = sel[p.id]?.qty || 0;
-          const priceVal = prices[p.id] != null ? prices[p.id] : String(units.find((u) => u.id === unitId)?.price || '');
+          const effectivePrice = priceOfStore(storeId, p.id, unitId);
+          const priceVal = prices[p.id] != null ? prices[p.id] : String(effectivePrice || '');
           const unit = units.find((u) => u.id === unitId) || units[0];
           return (
             <tr key={p.id} className="bg-white transition hover:bg-primary-soft/40">
@@ -546,7 +566,7 @@ function OrderTable({ productsOfStore, onAdd, onPreview }) {
                     className="!px-2 !py-1.5 text-xs !font-semibold"
                     inputMode="numeric"
                   />
-                  {unit && <p className="mt-0.5 text-[10px] text-ink-soft">acuan {rupiah(unit.price)} / {unit.name}</p>}
+                  {unit && <p className="mt-0.5 text-[10px] text-ink-soft">acuan {rupiah(priceOfStore(storeId, p.id, unitId))} / {unit.name}</p>}
                 </div>
               </TD>
               <TD>
@@ -724,6 +744,204 @@ function StoreFormModal({ open, title, onClose, initialName = '', submitLabel = 
           autoFocus
         />
       </Field>
+    </Modal>
+  );
+}
+
+function ManagePriceModal({ open, initialStoreId = '', onClose }) {
+  const { stores, products, priceOfStore, saveStorePrices, pushToast } = useApp();
+  const [storeId, setStoreId] = useState(initialStoreId || stores[0]?.id || '');
+  const [rows, setRows] = useState({});
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (open) {
+      setStoreId(initialStoreId || stores[0]?.id || '');
+      setRows({});
+      setError('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  useEffect(() => {
+    setRows({});
+    setError('');
+  }, [storeId]);
+
+  const store = stores.find((s) => s.id === storeId);
+  const lines = useMemo(() => {
+    if (!storeId) return [];
+    return products
+      .filter((p) => p.storeIds.includes(storeId))
+      .flatMap((p) =>
+        (p.units || []).map((u) => ({
+          key: `${p.id}:${u.id}`,
+          productId: p.id,
+          product: p,
+          unitId: u.id,
+          unitName: u.name,
+          unitFactor: Number(u.factor),
+          oldPrice: priceOfStore(storeId, p.id, u.id),
+        }))
+      );
+  }, [storeId, products, priceOfStore]);
+
+  const selected = lines.filter((l) => rows[l.key]?.checked);
+
+  const update = (key, patch) =>
+    setRows((prev) => ({ ...prev, [key]: { ...(prev[key] || { checked: false, newPrice: '' }), ...patch } }));
+
+  const save = () => {
+    const entries = [];
+    for (const l of lines) {
+      const r = rows[l.key];
+      if (!r || !r.checked) continue;
+      const np = Number(r.newPrice);
+      if (!(np > 0)) {
+        setError(`Harga baru untuk “${l.product.name} (${l.unitName})” harus berupa angka lebih dari 0.`);
+        return;
+      }
+      entries.push({ productId: l.productId, unitId: l.unitId, price: np });
+    }
+    if (!entries.length) {
+      setError('Pilih minimal satu barang, lalu isi harga baru yang akan disimpan.');
+      return;
+    }
+    saveStorePrices(storeId, entries);
+    pushToast(`Harga ${entries.length} barang diperbarui untuk ${store ? store.name : 'toko'}`);
+    onClose();
+  };
+
+  const fmtPrice = (v) =>
+    v === '' || v == null ? '—' : rupiah(Number(v) > 0 ? Number(v) : 0);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Kelola Harga Barang"
+      subtitle="Ubah harga referensi pembelian per pemasok. Pemasok lain & pesanan lama tidak ikut berubah."
+      size="xl"
+      footer={
+        <>
+          <Btn variant="ghost" onClick={onClose}>
+            Batal
+          </Btn>
+          <Btn icon={Tag} onClick={save} disabled={!selected.length}>
+            Simpan Perubahan
+          </Btn>
+        </>
+      }
+    >
+      <div className="mb-3">
+        <Field label="Pilih Toko Pemasok" required>
+          <Select value={storeId} onChange={(e) => setStoreId(e.target.value)}>
+            {stores.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+
+      {lines.length === 0 ? (
+        <div className="card">
+          <EmptyState
+            icon={PackageMinus}
+            title="Belum ada barang di toko ini"
+            description="Tambahkan barang dengan toko ini melalui halaman Barang terlebih dahulu."
+          />
+        </div>
+      ) : (
+        <>
+          <div className="mb-3 grid gap-2">
+            {lines.map((l) => {
+              const r = rows[l.key] || { checked: false, newPrice: '' };
+              return (
+                <div
+                  key={l.key}
+                  className={`flex items-start gap-3 rounded-xl border p-3 transition ${
+                    r.checked ? 'border-primary/50 bg-primary-soft/30' : 'border-line bg-white'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={r.checked}
+                    onChange={(e) => update(l.key, { checked: e.target.checked })}
+                    title="Pilih barang untuk diubah harganya"
+                    className="mt-1.5 h-4 w-4"
+                  />
+                  <ProductImage product={l.product} size="sm" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-bold text-ink">{l.product.name}</p>
+                    <p className="text-[11px] text-ink-soft">
+                      {l.unitName}
+                      {l.unitFactor !== 1 && (
+                        <span className="ml-1">· 1 = {formatQty(l.unitFactor)} satuan dasar</span>
+                      )}
+                    </p>
+                    <div className="mt-1.5 flex flex-wrap items-end gap-3">
+                      <p className="text-xs text-ink-soft">
+                        Harga lama: <span className="font-bold text-ink">{rupiah(l.oldPrice)}</span>
+                      </p>
+                      <div className="w-36">
+                        <Input
+                          type="number"
+                          min="0"
+                          value={r.newPrice}
+                          disabled={!r.checked}
+                          onChange={(e) => update(l.key, { newPrice: e.target.value })}
+                          placeholder="Harga baru"
+                          className="!px-2 !py-1 text-xs"
+                          inputMode="numeric"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {error && (
+            <p className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600">{error}</p>
+          )}
+
+          {selected.length > 0 && (
+            <div className="rounded-xl border border-line bg-primary-soft/50 p-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-bold uppercase tracking-wide text-ink-soft">
+                  Pratinjau Perubahan ({selected.length} baris)
+                </p>
+                <span className="text-[11px] font-semibold text-primary">{store ? store.name : ''}</span>
+              </div>
+              <div className="mt-2 hidden grid-cols-[1fr_110px_110px] gap-2 px-0.5 text-[10px] font-bold uppercase tracking-wider text-ink-soft sm:grid">
+                <span>Barang</span>
+                <span className="text-right">Harga Lama</span>
+                <span className="text-right">Harga Baru</span>
+              </div>
+              <div className="max-h-44 space-y-1.5 overflow-y-auto pr-1 sm:mt-1.5">
+                {selected.map((l) => {
+                  const r = rows[l.key] || { newPrice: '' };
+                  return (
+                    <div
+                      key={l.key}
+                      className="grid grid-cols-1 gap-0.5 rounded-lg bg-white/70 px-2.5 py-1.5 text-xs sm:grid-cols-[1fr_110px_110px] sm:items-center sm:gap-2"
+                    >
+                      <p className="truncate font-semibold text-ink">
+                        {l.product.name} — {l.unitName}
+                      </p>
+                      <p className="text-right text-ink-soft sm:pr-2">{rupiah(l.oldPrice)}</p>
+                      <p className="text-right font-bold text-primary sm:pr-2">{fmtPrice(r.newPrice)}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </Modal>
   );
 }

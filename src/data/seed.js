@@ -87,8 +87,6 @@ export function buildSeed() {
       promoDescription: 'Promo 1 dus: harga spesial grosir.',
       advertisement: true,
       advertisementDescription: 'Mie instan rasa soto dan ayam bawang tersedia.',
-      buyOneGetOne: true,
-      b1g1Description: 'Beli 1 dus Mie, GRATIS 2 bungkus.',
       createdAt: iso(50),
     },
     {
