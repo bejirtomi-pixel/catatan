@@ -168,7 +168,7 @@ export default function Pesanan() {
             placeholder="Cari no pesanan, toko, barang..."
             className="w-full sm:w-64"
           />
-          <div className="flex items-center gap-1.5 text-xs">
+          <div className="flex w-full items-center gap-1.5 text-xs sm:w-auto">
             <input
               type="date"
               value={startDate}
@@ -176,10 +176,10 @@ export default function Pesanan() {
                 setStartDate(e.target.value);
                 setPage(1);
               }}
-              className="input h-9 text-xs font-semibold"
+              className="input h-9 min-w-0 flex-1 text-xs font-semibold sm:w-auto"
               title="Dari tanggal"
             />
-            <span className="text-ink-soft">—</span>
+            <span className="text-ink-soft shrink-0">—</span>
             <input
               type="date"
               value={endDate}
@@ -187,7 +187,7 @@ export default function Pesanan() {
                 setEndDate(e.target.value);
                 setPage(1);
               }}
-              className="input h-9 text-xs font-semibold"
+              className="input h-9 min-w-0 flex-1 text-xs font-semibold sm:w-auto"
               title="Sampai tanggal"
             />
           </div>
@@ -198,6 +198,7 @@ export default function Pesanan() {
               icon={FilterX}
               onClick={resetFilter}
               title="Reset seluruh filter pencarian dan tanggal"
+              className="w-full sm:w-auto"
             >
               Reset
             </Btn>
@@ -218,7 +219,7 @@ export default function Pesanan() {
                 setStatusFilter(isSelected && c.id !== 'semua' ? 'semua' : c.id);
                 setPage(1);
               }}
-              className={`flex flex-col justify-between rounded-2xl border p-3.5 text-left transition shadow-soft ${
+              className={`flex flex-col justify-between rounded-2xl border p-3.5 text-left transition shadow-soft last:col-span-2 sm:last:col-span-1 ${
                 c.color
               } ${
                 isSelected
@@ -242,8 +243,8 @@ export default function Pesanan() {
       </div>
 
       {/* Kontrol Baris: Status Tabs & Pengaturan Page Size */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-1 rounded-xl bg-primary-soft/40 p-1">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap gap-1 rounded-xl bg-primary-soft/40 p-1 w-full sm:w-auto">
           {summaryCards.map((tab) => {
             const active = statusFilter === tab.id;
             return (
@@ -274,8 +275,8 @@ export default function Pesanan() {
         </div>
 
         {/* 10. Pengaturan Jumlah Data Per Halaman */}
-        <div className="flex items-center gap-2 text-xs text-ink-soft">
-          <span>Tampilkan:</span>
+        <div className="flex w-full items-center justify-between sm:w-auto sm:justify-end gap-2 text-xs text-ink-soft">
+          <span>Tampilkan per halaman:</span>
           <select
             value={pageSize}
             onChange={(e) => {
@@ -294,7 +295,7 @@ export default function Pesanan() {
         </div>
       </div>
 
-      {/* 2. Tabel Pesanan Utama */}
+      {/* 2. Daftar Pesanan: Tabel untuk Desktop & Tablet, Kartu untuk Mobile */}
       {filtered.length === 0 ? (
         <div className="card">
           <EmptyState
@@ -315,19 +316,128 @@ export default function Pesanan() {
           />
         </div>
       ) : (
-        <TableWrap minWidth="min-w-[860px]">
-          <thead className="border-b border-line bg-primary-soft/50 font-bold text-ink text-xs">
-            <tr>
-              <TH className="w-40">1. Nomor Pesanan</TH>
-              <TH className="w-36">2. Waktu Pemesanan</TH>
-              <TH className="w-48">3. Toko Pemasok</TH>
-              <TH>4. Jumlah Jenis Barang</TH>
-              <TH className="w-40 text-right">5. Total Perkiraan Biaya</TH>
-              <TH className="w-36 text-center">6. Status Pesanan</TH>
-              <TH className="w-44 text-right">7. Aksi</TH>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-line bg-white text-xs">
+        <>
+          {/* Tampilan Desktop & Tablet: Tabel Lengkap */}
+          <div className="hidden md:block">
+            <TableWrap minWidth="min-w-[860px]">
+              <thead className="border-b border-line bg-primary-soft/50 font-bold text-ink text-xs">
+                <tr>
+                  <TH className="w-40">1. Nomor Pesanan</TH>
+                  <TH className="w-36">2. Waktu Pemesanan</TH>
+                  <TH className="w-48">3. Toko Pemasok</TH>
+                  <TH>4. Jumlah Jenis Barang</TH>
+                  <TH className="w-40 text-right">5. Total Perkiraan Biaya</TH>
+                  <TH className="w-36 text-center">6. Status Pesanan</TH>
+                  <TH className="w-44 text-right">7. Aksi</TH>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line bg-white text-xs">
+                {rows.map((o) => {
+                  const canReceive =
+                    o.status === 'belum_diterima' ||
+                    o.status === 'sebagian' ||
+                    o.status === 'active';
+
+                  const itemCount = o.items?.length || 0;
+                  const previewItems = (o.items || []).slice(0, 2);
+                  const remainingItemCount = Math.max(0, itemCount - 2);
+
+                  return (
+                    <tr key={o.id} className="transition hover:bg-primary-soft/30">
+                      {/* 1. Nomor Pesanan */}
+                      <TD>
+                        <p className="font-extrabold text-primary">{o.id}</p>
+                        {o.note && (
+                          <p className="max-w-[150px] truncate text-[11px] italic text-ink-soft" title={o.note}>
+                            “{o.note}”
+                          </p>
+                        )}
+                      </TD>
+
+                      {/* 2. Tanggal & Waktu */}
+                      <TD className="text-ink-soft whitespace-nowrap">
+                        {formatDateTime(o.createdAt)}
+                      </TD>
+
+                      {/* 3. Toko Pemasok */}
+                      <TD>
+                        <Chip tone="soft">🏪 {storeById(o.storeId)?.name || '—'}</Chip>
+                      </TD>
+
+                      {/* 4. Jumlah Jenis Barang & Pratinjau Rapi */}
+                      <TD>
+                        <div className="min-w-0 max-w-[260px]">
+                          <p className="font-bold text-ink">
+                            {itemCount} jenis barang
+                          </p>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {previewItems.map((it, idx) => (
+                              <span
+                                key={idx}
+                                className="inline-block max-w-[125px] truncate rounded bg-primary-soft/70 px-1.5 py-0.5 text-[10px] font-semibold text-ink"
+                                title={`${it.productNameSnapshot} (${it.quantity} ${it.unitName})`}
+                              >
+                                {it.productNameSnapshot}
+                              </span>
+                            ))}
+                            {remainingItemCount > 0 && (
+                              <span className="rounded bg-line/70 px-1.5 py-0.5 text-[10px] font-bold text-ink-soft">
+                                +{remainingItemCount} lainnya
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </TD>
+
+                      {/* 5. Total Perkiraan Harga Pesanan */}
+                      <TD className="text-right">
+                        <p className="font-extrabold text-ink">{rupiah(o.totalPrice)}</p>
+                        {o.totalCost > 0 && o.totalCost !== o.totalPrice && (
+                          <p className="text-[10px] text-emerald-600 font-bold">
+                            Masuk: {rupiah(o.totalCost)}
+                          </p>
+                        )}
+                      </TD>
+
+                      {/* 6. Status Pesanan */}
+                      <TD className="text-center">
+                        <StatusPill status={o.status} />
+                      </TD>
+
+                      {/* 7. Aksi (Lihat Detail & Catat Penerimaan) */}
+                      <TD>
+                        <div className="flex justify-end gap-1.5">
+                          <Btn
+                            size="sm"
+                            variant={canReceive ? 'outline' : 'soft'}
+                            icon={Eye}
+                            onClick={() => handleOpenDetail(o, false)}
+                            title="Lihat rincian lengkap pesanan"
+                          >
+                            Lihat Detail
+                          </Btn>
+
+                          {canReceive && (
+                            <Btn
+                              size="sm"
+                              icon={PackageCheck}
+                              onClick={() => handleOpenDetail(o, true)}
+                              title="Buka formulir untuk mencatat barang yang baru tiba"
+                            >
+                              Catat Penerimaan
+                            </Btn>
+                          )}
+                        </div>
+                      </TD>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </TableWrap>
+          </div>
+
+          {/* Tampilan Mobile: Kartu Responsif Vertikal */}
+          <div className="space-y-3.5 md:hidden">
             {rows.map((o) => {
               const canReceive =
                 o.status === 'belum_diterima' ||
@@ -335,101 +445,127 @@ export default function Pesanan() {
                 o.status === 'active';
 
               const itemCount = o.items?.length || 0;
-              const previewItems = (o.items || []).slice(0, 2);
-              const remainingItemCount = Math.max(0, itemCount - 2);
+              const previewItems = (o.items || []).slice(0, 3);
+              const remainingItemCount = Math.max(0, itemCount - 3);
+              const storeName = storeById(o.storeId)?.name || '—';
 
               return (
-                <tr key={o.id} className="transition hover:bg-primary-soft/30">
-                  {/* 1. Nomor Pesanan */}
-                  <TD>
-                    <p className="font-extrabold text-primary">{o.id}</p>
-                    {o.note && (
-                      <p className="max-w-[150px] truncate text-[11px] italic text-ink-soft" title={o.note}>
-                        “{o.note}”
-                      </p>
-                    )}
-                  </TD>
-
-                  {/* 2. Tanggal & Waktu */}
-                  <TD className="text-ink-soft whitespace-nowrap">
-                    {formatDateTime(o.createdAt)}
-                  </TD>
-
-                  {/* 3. Toko Pemasok */}
-                  <TD>
-                    <Chip tone="soft">🏪 {storeById(o.storeId)?.name || '—'}</Chip>
-                  </TD>
-
-                  {/* 4. Jumlah Jenis Barang & Pratinjau Rapi */}
-                  <TD>
-                    <div className="min-w-0 max-w-[260px]">
-                      <p className="font-bold text-ink">
-                        {itemCount} jenis barang
-                      </p>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {previewItems.map((it, idx) => (
-                          <span
-                            key={idx}
-                            className="inline-block max-w-[125px] truncate rounded bg-primary-soft/70 px-1.5 py-0.5 text-[10px] font-semibold text-ink"
-                            title={`${it.productNameSnapshot} (${it.quantity} ${it.unitName})`}
-                          >
-                            {it.productNameSnapshot}
-                          </span>
-                        ))}
-                        {remainingItemCount > 0 && (
-                          <span className="rounded bg-line/70 px-1.5 py-0.5 text-[10px] font-bold text-ink-soft">
-                            +{remainingItemCount} lainnya
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </TD>
-
-                  {/* 5. Total Perkiraan Harga Pesanan */}
-                  <TD className="text-right">
-                    <p className="font-extrabold text-ink">{rupiah(o.totalPrice)}</p>
-                    {o.totalCost > 0 && o.totalCost !== o.totalPrice && (
-                      <p className="text-[10px] text-emerald-600 font-bold">
-                        Masuk: {rupiah(o.totalCost)}
-                      </p>
-                    )}
-                  </TD>
-
-                  {/* 6. Status Pesanan */}
-                  <TD className="text-center">
-                    <StatusPill status={o.status} />
-                  </TD>
-
-                  {/* 7. Aksi (Lihat Detail & Catat Penerimaan) */}
-                  <TD>
-                    <div className="flex justify-end gap-1.5">
-                      <Btn
-                        size="sm"
-                        variant={canReceive ? 'outline' : 'soft'}
-                        icon={Eye}
-                        onClick={() => handleOpenDetail(o, false)}
-                        title="Lihat rincian lengkap pesanan"
-                      >
-                        Lihat Detail
-                      </Btn>
-
-                      {canReceive && (
-                        <Btn
-                          size="sm"
-                          icon={PackageCheck}
-                          onClick={() => handleOpenDetail(o, true)}
-                          title="Buka formulir untuk mencatat barang yang baru tiba"
-                        >
-                          Catat Penerimaan
-                        </Btn>
+                <div
+                  key={o.id}
+                  className="card p-4 shadow-soft transition hover:border-primary/40 space-y-3"
+                >
+                  {/* Baris 1: Nomor Pesanan & Status */}
+                  <div className="flex items-start justify-between gap-2 border-b border-line/60 pb-2.5">
+                    <div className="min-w-0 flex-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">
+                        Nomor Pesanan
+                      </span>
+                      <p className="text-sm font-extrabold text-primary">{o.id}</p>
+                      {o.note && (
+                        <p className="mt-0.5 text-xs italic text-ink-soft break-words">
+                          “{o.note}”
+                        </p>
                       )}
                     </div>
-                  </TD>
-                </tr>
+                    <div className="shrink-0">
+                      <StatusPill status={o.status} />
+                    </div>
+                  </div>
+
+                  {/* Baris 2: Toko Pemasok & Waktu Pemesanan */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="min-w-0">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">
+                        Toko Pemasok
+                      </span>
+                      <p className="mt-0.5 font-bold text-ink truncate" title={storeName}>
+                        🏪 {storeName}
+                      </p>
+                    </div>
+                    <div className="min-w-0">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">
+                        Waktu Pemesanan
+                      </span>
+                      <p className="mt-0.5 font-medium text-ink-soft text-[11px] leading-tight">
+                        {formatDateTime(o.createdAt)}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Baris 3: Barang yang Dipesan */}
+                  <div className="rounded-xl border border-line bg-primary-soft/30 p-2.5 text-xs">
+                    <div className="flex items-center justify-between text-ink mb-1.5">
+                      <span className="font-bold">{itemCount} Jenis Barang</span>
+                      <span className="text-[10px] font-bold text-ink-soft">
+                        {(o.items || []).reduce((acc, it) => acc + (Number(it.quantity) || 0), 0)} unit dipesan
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {previewItems.map((it, idx) => (
+                        <span
+                          key={idx}
+                          className="inline-block max-w-[140px] truncate rounded bg-white px-2 py-0.5 text-[10px] font-semibold text-ink border border-line/60 shadow-xs"
+                          title={`${it.productNameSnapshot} (${it.quantity} ${it.unitName})`}
+                        >
+                          {it.productNameSnapshot} ({it.quantity} {it.unitName})
+                        </span>
+                      ))}
+                      {remainingItemCount > 0 && (
+                        <span className="rounded bg-line/80 px-1.5 py-0.5 text-[10px] font-bold text-ink-soft">
+                          +{remainingItemCount} lainnya
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Baris 4: Total Perkiraan Biaya */}
+                  <div className="flex items-center justify-between rounded-xl bg-surface border border-line/60 p-2.5">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">
+                        Total Perkiraan Biaya
+                      </span>
+                      <p className="text-base font-black text-ink">{rupiah(o.totalPrice)}</p>
+                    </div>
+                    {o.totalCost > 0 && o.totalCost !== o.totalPrice && (
+                      <div className="text-right">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                          Biaya Diterima
+                        </span>
+                        <p className="text-xs font-black text-emerald-600">
+                          {rupiah(o.totalCost)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Baris 5: Tombol Aksi */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <Btn
+                      size="sm"
+                      variant={canReceive ? 'outline' : 'primary'}
+                      icon={Eye}
+                      className="flex-1"
+                      onClick={() => handleOpenDetail(o, false)}
+                    >
+                      Lihat Detail
+                    </Btn>
+                    {canReceive && (
+                      <Btn
+                        size="sm"
+                        variant="primary"
+                        icon={PackageCheck}
+                        className="flex-1"
+                        onClick={() => handleOpenDetail(o, true)}
+                      >
+                        Catat Penerimaan
+                      </Btn>
+                    )}
+                  </div>
+                </div>
               );
             })}
-          </tbody>
-        </TableWrap>
+          </div>
+        </>
       )}
 
       {/* Pagination Footer */}

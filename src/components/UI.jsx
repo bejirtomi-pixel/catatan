@@ -248,13 +248,13 @@ export function Pagination({ page, totalPages, onPage, total, from, to }) {
   }
   const btnCls = 'flex h-8 min-w-8 items-center justify-center rounded-lg px-2 text-xs font-semibold transition';
   return (
-    <div className="flex flex-col gap-2 border-t border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-      <p className="text-xs text-ink-soft">
+    <div className="flex flex-col gap-2.5 border-t border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <p className="text-xs text-ink-soft text-center sm:text-left">
         Menampilkan <span className="font-bold text-ink">{from || 0}</span>–
         <span className="font-bold text-ink">{to || 0}</span> dari{' '}
         <span className="font-bold text-ink">{total}</span>
       </p>
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center justify-center gap-1 sm:justify-end">
         <button
           type="button"
           disabled={page <= 1}
