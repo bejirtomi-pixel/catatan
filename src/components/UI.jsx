@@ -295,10 +295,18 @@ export function Pagination({ page, totalPages, onPage, total, from, to }) {
 /* ---------- Status pill ---------- */
 export function StatusPill({ status }) {
   const map = {
-    active: { label: 'Belum Selesai', cls: 'bg-amber-100 text-amber-700' },
-    selesai: { label: 'Selesai', cls: 'bg-emerald-100 text-emerald-700' },
+    belum_diterima: { label: 'Belum Diterima', cls: 'bg-amber-100 text-amber-700' },
+    active: { label: 'Belum Diterima', cls: 'bg-amber-100 text-amber-700' },
+    pending: { label: 'Belum Diterima', cls: 'bg-amber-100 text-amber-700' },
+    sebagian: { label: 'Diterima Sebagian', cls: 'bg-blue-100 text-blue-700' },
+    proses: { label: 'Sedang Diproses', cls: 'bg-sky-100 text-sky-700' },
+    diproses: { label: 'Sedang Diproses', cls: 'bg-sky-100 text-sky-700' },
+    selesai: { label: 'Sudah Diterima', cls: 'bg-emerald-100 text-emerald-700' },
+    diterima: { label: 'Sudah Diterima', cls: 'bg-emerald-100 text-emerald-700' },
+    batal: { label: 'Dibatalkan', cls: 'bg-rose-100 text-rose-700' },
+    dibatalkan: { label: 'Dibatalkan', cls: 'bg-rose-100 text-rose-700' },
   };
-  const s = map[status] || map.active;
+  const s = map[status] || map.belum_diterima;
   return (
     <span className={cx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold', s.cls)}>
       <span className="h-1.5 w-1.5 rounded-full bg-current" />

@@ -57,7 +57,7 @@ export default function ProductImage({
   product,
   size = 'md',
   onClick,
-  showBadges = true,
+  showBadges = false,
   className = '',
 }) {
   if (!product) return null;

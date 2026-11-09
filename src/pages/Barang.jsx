@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  AlertTriangle,
+  CheckCircle2,
+  Copy,
+  Eye,
+  FilterX,
   Package,
   PackagePlus,
   Pencil,
   Plus,
+  Power,
   Trash2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { formatQty, pickUnit, qtyText, rupiah, uid } from '../utils/format';
+import { formatQty, rupiah, uid } from '../utils/format';
 import {
   Btn,
   Chip,
@@ -26,24 +30,12 @@ import {
   TableWrap,
   Textarea,
   Toggle,
-  cx,
 } from '../components/UI';
-import ProductImage, { ProductFlags } from '../components/ProductImage';
+import ProductImage from '../components/ProductImage';
 import ProductDetailModal from '../components/ProductDetailModal';
 import ImageUpload from '../components/ImageUpload';
 import StorePicker from '../components/StorePicker';
 
-const PAGE_SIZE = 8;
-
-const STOCK_FILTERS = [
-  { id: 'semua', label: 'Semua' },
-  { id: 'tersedia', label: 'Tersedia' },
-  { id: 'menipis', label: 'Menipis' },
-  { id: 'habis', label: 'Habis' },
-];
-
-// Sumber data kategori aplikasi: nilai "category" pada data produk (tidak ada registry kategori terpisah).
-// Daftar opsi harus selalu diturunkan dari sini agar kategori baru langsung muncul tanpa ubah kode.
 const distinctCategories = (products) => {
   const seen = new Set();
   const list = [];
@@ -57,32 +49,36 @@ const distinctCategories = (products) => {
   return list.sort((a, b) => a.localeCompare(b, 'id'));
 };
 
-const stockStatus = (product, qty) => {
-  const n = Number(qty) || 0;
-  if (n <= 0) return 'habis';
-  if (product.minStock != null && product.minStock > 0 && n < Number(product.minStock)) return 'menipis';
-  return 'tersedia';
-};
-
-const STOCK_BADGE = {
-  menipis: { label: 'Menipis', cls: 'bg-amber-100 text-amber-700', icon: AlertTriangle },
-  habis: { label: 'Habis', cls: 'bg-rose-100 text-rose-600', icon: AlertTriangle },
-};
-
 export default function Barang() {
-  const { products, stores, saveProduct, deleteProduct, createStore, stockOfProduct, baseNameOf, pushToast } = useApp();
+  const {
+    products,
+    stores,
+    saveProduct,
+    deleteProduct,
+    updateProduct,
+    createStore,
+    pushToast,
+  } = useApp();
+
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Filter states
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('semua');
-  const [stok, setStok] = useState('semua');
+  const [statusFilter, setStatusFilter] = useState('semua'); // 'semua' | 'aktif' | 'nonaktif'
+
+  // Pagination & Display settings
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  // Modals state
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [detail, setDetail] = useState(null);
 
-  // Quick action "Edit Barang" dari halaman lain: buka form barang ini.
+  // Handle edit from navigation
   useEffect(() => {
     const st = location.state;
     if (st && st.editProductId) {
@@ -93,48 +89,90 @@ export default function Barang() {
       }
       navigate(location.pathname, { replace: true, state: null });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.state]);
+  }, [location.state, products, navigate, location.pathname]);
 
-  const categoryOptions = useMemo(() => [{ id: 'semua', label: 'Semua' }, ...distinctCategories(products).map((c) => ({ id: c, label: c }))], [products]);
+  const categoryOptions = useMemo(
+    () => [
+      { id: 'semua', label: 'Semua Kategori' },
+      ...distinctCategories(products).map((c) => ({ id: c, label: c })),
+    ],
+    [products]
+  );
 
+  // Filtered products list
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return products.filter((p) => {
+      // Filter Kategori
       if (cat !== 'semua' && (p.category || '').trim() !== cat) return false;
-      if (stok !== 'semua') {
-        const st = stockOfProduct(p.id);
-        if (stockStatus(p, st ? st.quantity : 0) !== stok) return false;
-      }
+
+      // Filter Status Aktif / Nonaktif
+      const isActive = p.active !== false;
+      if (statusFilter === 'aktif' && !isActive) return false;
+      if (statusFilter === 'nonaktif' && isActive) return false;
+
+      // Filter Pencarian nama barang, kategori, deskripsi, promo
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) ||
         (p.category || '').toLowerCase().includes(q) ||
-        p.storeIds.some((id) => stores.find((s) => s.id === id)?.name.toLowerCase().includes(q))
+        (p.description || '').toLowerCase().includes(q) ||
+        (p.promoTitle || '').toLowerCase().includes(q)
       );
     });
-  }, [products, search, cat, stok, stores, stockOfProduct]);
+  }, [products, search, cat, statusFilter]);
 
-  const suppliersOf = (p) => {
-    const names = p.storeIds
-      .map((id) => stores.find((s) => s.id === id)?.name)
-      .filter(Boolean);
-    return names;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const rows = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  const hasFilter = search.trim() !== '' || cat !== 'semua' || statusFilter !== 'semua';
+
+  const resetFilter = () => {
+    setSearch('');
+    setCat('semua');
+    setStatusFilter('semua');
+    setPage(1);
   };
 
-  const openDetail = (p) => setDetail(p);
-  const openForm = (p) => {
-    setEditing(p);
+  // Duplikasi barang
+  const handleDuplicate = (p) => {
+    const copy = {
+      name: `${p.name} (Salinan)`,
+      category: p.category || '',
+      image: p.image || '',
+      minStock: p.minStock != null ? String(p.minStock) : '',
+      storeIds: [...(p.storeIds || [])],
+      units: (p.units || []).map((u) => ({
+        id: uid('u-'),
+        name: u.name,
+        factor: String(u.factor),
+        price: String(u.price),
+      })),
+      featured: !!p.featured,
+      promo: !!p.promo,
+      promoTitle: p.promoTitle || '',
+      promoDesc: p.promoDescription || '',
+      advertisement: !!p.advertisement,
+      adDesc: p.advertisementDescription || '',
+      description: p.description || '',
+      active: p.active !== false,
+      _isDuplicate: true,
+    };
+    setEditing(copy);
     setFormOpen(true);
   };
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const rows = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  // Toggle status aktif / nonaktif
+  const handleToggleActive = (p) => {
+    const nextActive = p.active === false ? true : false;
+    updateProduct(p.id, { active: nextActive });
+    pushToast(`Status “${p.name}” diubah menjadi ${nextActive ? 'Aktif' : 'Nonaktif'}`);
+  };
 
   const handleSave = (data) => {
     const storeIds = [];
-    for (const sel of data.stores) {
+    for (const sel of data.stores || []) {
       if (sel.id) {
         if (!storeIds.includes(sel.id)) storeIds.push(sel.id);
       } else {
@@ -142,7 +180,6 @@ export default function Barang() {
         if (created && !storeIds.includes(created.id)) storeIds.push(created.id);
       }
     }
-    if (storeIds.length === 0) return;
 
     const units = data.units.map((u) => ({
       id: u.id || uid('u-'),
@@ -150,14 +187,18 @@ export default function Barang() {
       factor: Number(u.factor),
       price: Number(u.price),
     }));
-    const base = units.find((u) => u.factor === 1);
+    const base = units.find((u) => u.factor === 1) || units[0];
 
-    const existing = editing ? products.find((p) => p.id === editing.id) : null;
+    const isDuplicate = editing && editing._isDuplicate;
+    const existing = !isDuplicate && editing?.id ? products.find((p) => p.id === editing.id) : null;
     let previousPrice = base.price;
     let priceChange = 'none';
+
     if (existing) {
       const oldBase = (existing.units || []).find((u) => u.factor === 1);
-      const oldPrice = oldBase ? Number(oldBase.price) : Number((existing.units || [])[0]?.price || 0);
+      const oldPrice = oldBase
+        ? Number(oldBase.price)
+        : Number((existing.units || [])[0]?.price || 0);
       if (base.price === oldPrice) {
         previousPrice = existing.previousPrice;
         priceChange = existing.priceChange;
@@ -169,7 +210,7 @@ export default function Barang() {
 
     saveProduct({
       ...(existing || {}),
-      id: editing?.id,
+      id: isDuplicate ? undefined : editing?.id,
       name: data.name,
       category: data.category,
       image: data.image,
@@ -185,22 +226,30 @@ export default function Barang() {
       advertisementDescription: data.adDesc || '',
       featured: !!data.featured,
       description: data.description || '',
+      active: data.active !== false,
     });
-    pushToast(editing ? 'Barang berhasil diperbarui' : 'Barang berhasil ditambahkan');
+
+    pushToast(
+      isDuplicate
+        ? 'Barang berhasil diduplikasi'
+        : editing
+        ? 'Barang berhasil diperbarui'
+        : 'Barang berhasil ditambahkan'
+    );
     setFormOpen(false);
     setEditing(null);
   };
 
   return (
-    <div>
-      <PageHeader title="Barang" subtitle={`Master data barang (${products.length} barang)`}>
+    <div className="space-y-4">
+      <PageHeader title="Barang" subtitle={`Master data & informasi seluruh barang warung (${products.length} barang)`}>
         <SearchInput
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);
             setPage(1);
           }}
-          placeholder="Cari barang, kategori, toko..."
+          placeholder="Cari nama barang, kategori, deskripsi..."
           className="w-full sm:w-64"
         />
         <Btn
@@ -214,44 +263,92 @@ export default function Barang() {
         </Btn>
       </PageHeader>
 
-      {/* Filter: kategori (dinamis dari data produk) + status stok */}
-      <div className="card mb-4 p-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="block min-w-[10rem] flex-1 sm:max-w-xs">
-            <span className="label">Kategori</span>
-            <select
-              data-testid="filter-kategori"
-              value={cat}
-              onChange={(e) => {
-                setCat(e.target.value);
-                setPage(1);
-              }}
-              className="input w-full pr-9"
-            >
-              {categoryOptions.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="mr-1 text-[11px] font-bold uppercase tracking-wider text-ink-soft">Stok</span>
-              {STOCK_FILTERS.map((s) => (
-                <FilterChip
-                  key={s.id}
-                  active={stok === s.id}
+      {/* Filter: Kategori, Status Aktif/Nonaktif, dan Reset */}
+      <div className="card p-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3 flex-1">
+            {/* Filter Kategori */}
+            <label className="block min-w-[11rem] flex-1 sm:max-w-xs">
+              <span className="label">Kategori</span>
+              <select
+                data-testid="filter-kategori"
+                value={cat}
+                onChange={(e) => {
+                  setCat(e.target.value);
+                  setPage(1);
+                }}
+                className="input w-full pr-8"
+              >
+                {categoryOptions.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {/* Filter Status Aktif / Nonaktif */}
+            <div className="min-w-[12rem]">
+              <span className="label">Status Barang</span>
+              <div className="flex rounded-xl border border-line bg-surface/50 p-1 text-xs">
+                <button
+                  type="button"
                   onClick={() => {
-                    setStok(s.id);
+                    setStatusFilter('semua');
                     setPage(1);
                   }}
+                  className={`flex-1 rounded-lg py-1 px-2.5 font-bold transition ${
+                    statusFilter === 'semua'
+                      ? 'bg-primary text-white shadow-soft'
+                      : 'text-ink-soft hover:text-ink'
+                  }`}
                 >
-                  {s.label}
-                </FilterChip>
-              ))}
+                  Semua
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter('aktif');
+                    setPage(1);
+                  }}
+                  className={`flex-1 rounded-lg py-1 px-2.5 font-bold transition ${
+                    statusFilter === 'aktif'
+                      ? 'bg-primary text-white shadow-soft'
+                      : 'text-ink-soft hover:text-ink'
+                  }`}
+                >
+                  Aktif
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter('nonaktif');
+                    setPage(1);
+                  }}
+                  className={`flex-1 rounded-lg py-1 px-2.5 font-bold transition ${
+                    statusFilter === 'nonaktif'
+                      ? 'bg-primary text-white shadow-soft'
+                      : 'text-ink-soft hover:text-ink'
+                  }`}
+                >
+                  Nonaktif
+                </button>
+              </div>
             </div>
           </div>
+
+          {/* Reset Filter Button */}
+          {hasFilter && (
+            <Btn
+              size="sm"
+              variant="outline"
+              icon={FilterX}
+              onClick={resetFilter}
+              className="self-end"
+            >
+              Reset Filter
+            </Btn>
+          )}
         </div>
       </div>
 
@@ -259,32 +356,15 @@ export default function Barang() {
         <div className="card">
           <EmptyState
             icon={Package}
-            title={
-              search
-                ? 'Barang tidak ditemukan'
-                : cat !== 'semua' || stok !== 'semua'
-                ? 'Tidak ada barang yang cocok'
-                : 'Belum ada barang'
-            }
+            title={hasFilter ? 'Barang tidak ditemukan' : 'Belum ada barang terdaftar'}
             description={
-              search
-                ? 'Coba kata kunci pencarian lain.'
-                : cat !== 'semua' || stok !== 'semua'
-                ? 'Coba ubah kategori atau status stok yang dipilih.'
-                : 'Tambahkan barang pertama Anda.'
+              hasFilter
+                ? 'Coba ubah kata kunci pencarian, kategori, atau status yang dipilih.'
+                : 'Tambahkan data master barang pertama warung Anda.'
             }
             action={
-              search || cat !== 'semua' || stok !== 'semua' ? (
-                <Btn
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setSearch('');
-                    setCat('semua');
-                    setStok('semua');
-                    setPage(1);
-                  }}
-                >
+              hasFilter ? (
+                <Btn size="sm" variant="outline" onClick={resetFilter}>
                   Reset Filter
                 </Btn>
               ) : (
@@ -297,87 +377,177 @@ export default function Barang() {
         </div>
       ) : (
         <>
-          {/* Tabel desktop */}
+          {/* Tabel Desktop: 6 Kolom Sesuai Ketentuan */}
           <div className="hidden md:block" data-testid="daftar-barang-table">
-            <TableWrap minWidth="min-w-[920px]">
+            <TableWrap minWidth="min-w-[940px]">
               <thead className="border-b border-line bg-primary-soft/50">
                 <tr>
-                  <TH>Gambar</TH>
-                  <TH>Nama Barang</TH>
-                  <TH>Kategori</TH>
-                  <TH>Satuan & Harga</TH>
-                  <TH>Supplier</TH>
-                  <TH>Stok</TH>
-                  <TH className="text-right">Aksi</TH>
+                  <TH className="w-16">Gambar</TH>
+                  <TH className="min-w-[200px]">Nama Barang</TH>
+                  <TH className="min-w-[130px]">Kategori</TH>
+                  <TH className="min-w-[220px]">Satuan dan Harga</TH>
+                  <TH className="min-w-[220px]">Informasi Barang</TH>
+                  <TH className="w-40 text-right">Aksi</TH>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
                 {rows.map((p) => {
-                  const stock = stockOfProduct(p.id);
-                  const qty = stock ? Number(stock.quantity) || 0 : 0;
-                  const st = stockStatus(p, qty);
-                  const quick = pickUnit(p.units, qty);
-                  const supps = suppliersOf(p);
-                  const shown = supps.slice(0, 2);
+                  const isActive = p.active !== false;
+
                   return (
-                    <tr key={p.id} className="bg-white transition hover:bg-primary-soft/40">
+                    <tr
+                      key={p.id}
+                      className={`transition hover:bg-primary-soft/30 ${
+                        !isActive ? 'bg-background/40 opacity-75' : 'bg-white'
+                      }`}
+                    >
+                      {/* 1. Gambar Barang */}
                       <TD>
-                        <ProductImage product={p} size="md" onClick={() => openDetail(p)} />
+                        <ProductImage product={p} size="md" showBadges={false} onClick={() => setDetail(p)} />
                       </TD>
-                      <TD>
-                        <button
-                          type="button"
-                          onClick={() => openDetail(p)}
-                          className="text-left font-bold text-ink hover:text-primary"
-                        >
-                          {p.name}
-                        </button>
-                        <ProductFlags product={p} />
+
+                      {/* 2. Nama Barang */}
+                      <TD className="py-3.5">
+                        <div className="max-w-[220px]">
+                          <button
+                            type="button"
+                            onClick={() => setDetail(p)}
+                            title="Buka detail barang"
+                            className="text-left font-bold text-ink hover:text-primary leading-snug transition"
+                          >
+                            {p.name}
+                          </button>
+                          {p.active === false && (
+                            <span className="mt-1 inline-block rounded-md bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-600">
+                              Nonaktif
+                            </span>
+                          )}
+                        </div>
                       </TD>
-                      <TD>
+
+                      {/* 3. Kategori */}
+                      <TD className="py-3.5">
                         {p.category ? (
                           <Chip tone="violet">{p.category}</Chip>
                         ) : (
                           <span className="text-xs text-ink-soft">—</span>
                         )}
                       </TD>
-                      <TD>
-                        <div className="space-y-0.5">
-                          {(p.units || []).map((u) => (
-                            <p key={u.id} className="text-xs text-ink">
-                              {u.name}
-                              {Number(u.factor) !== 1 && (
-                                <span className="text-ink-soft"> ({formatQty(u.factor)})</span>
-                              )}{' '}
-                              — <span className="font-bold text-primary">{rupiah(u.price)}</span>
-                            </p>
-                          ))}
+
+                      {/* 4. Satuan dan Harga (Disusun Vertikal Rapi) */}
+                      <TD className="py-3.5">
+                        <div className="space-y-1.5 py-0.5">
+                          {(p.units || []).map((u) => {
+                            const isBase = Number(u.factor) === 1;
+                            return (
+                              <div
+                                key={u.id}
+                                className="flex items-baseline justify-between gap-3 text-xs"
+                              >
+                                <span className="inline-flex items-center gap-1.5 font-medium text-ink">
+                                  <span
+                                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                      isBase
+                                        ? 'bg-primary-soft text-primary'
+                                        : 'bg-line/70 text-ink-soft'
+                                    }`}
+                                  >
+                                    {u.name}
+                                  </span>
+                                  {isBase ? (
+                                    <span className="text-[10px] text-ink-soft">(utama)</span>
+                                  ) : (
+                                    <span className="text-[10px] text-ink-soft">
+                                      (1={formatQty(u.factor)})
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="font-bold text-primary whitespace-nowrap">
+                                  {rupiah(u.price)}
+                                </span>
+                              </div>
+                            );
+                          })}
                         </div>
                       </TD>
-                      <TD>
-                        {shown.length > 0 ? (
-                          <p className="text-xs font-semibold text-ink">
-                            {shown.join(' • ')}
-                            {supps.length > shown.length && (
-                              <span className="text-ink-soft"> • +{supps.length - shown.length}</span>
+
+                      {/* 5. Informasi Barang (Sederhana & Informatif) */}
+                      <TD className="py-3.5">
+                        <div className="max-w-[240px] space-y-1 text-xs">
+                          <div className="flex flex-wrap gap-1">
+                            {p.featured && (
+                              <span className="rounded-md bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                                Unggulan
+                              </span>
                             )}
-                          </p>
-                        ) : (
-                          <span className="text-xs text-ink-soft">—</span>
-                        )}
+                            {p.promo && (
+                              <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                                Promo
+                              </span>
+                            )}
+                            {p.advertisement && (
+                              <span className="rounded-md bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">
+                                Iklan
+                              </span>
+                            )}
+                          </div>
+                          {p.promo && p.promoTitle && (
+                            <p className="font-semibold text-primary line-clamp-1">
+                              {p.promoTitle}
+                            </p>
+                          )}
+                          {p.description && !p.promo && (
+                            <p className="text-ink-soft line-clamp-2 leading-relaxed">
+                              {p.description}
+                            </p>
+                          )}
+                          {!p.promo && !p.description && !p.featured && !p.advertisement && (
+                            <span className="text-ink-soft">—</span>
+                          )}
+                        </div>
                       </TD>
-                      <TD>
-                        <StockCell qty={qty} st={st} quick={quick} baseName={quick.unit?.name || unitBaseName(p)} />
-                      </TD>
-                      <TD>
-                        <div className="flex justify-end gap-1">
+
+                      {/* 6. Aksi: Detail, Edit, Duplikasi, Toggle Aktif, Hapus */}
+                      <TD className="py-3.5 text-right">
+                        <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
-                            onClick={() => openForm(p)}
+                            onClick={() => setDetail(p)}
+                            title="Lihat detail lengkap barang"
+                            className="rounded-lg p-2 text-ink-soft transition hover:bg-primary-soft hover:text-primary active:scale-95"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditing(p);
+                              setFormOpen(true);
+                            }}
                             title="Edit barang"
                             className="rounded-lg p-2 text-ink-soft transition hover:bg-primary-soft hover:text-primary active:scale-95"
                           >
                             <Pencil className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDuplicate(p)}
+                            title="Duplikasi barang"
+                            className="rounded-lg p-2 text-ink-soft transition hover:bg-sky-50 hover:text-sky-600 active:scale-95"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleActive(p)}
+                            title={isActive ? 'Nonaktifkan barang' : 'Aktifkan barang'}
+                            className={`rounded-lg p-2 transition active:scale-95 ${
+                              isActive
+                                ? 'text-ink-soft hover:bg-amber-50 hover:text-amber-600'
+                                : 'text-rose-500 hover:bg-emerald-50 hover:text-emerald-600'
+                            }`}
+                          >
+                            <Power className="h-4 w-4" />
                           </button>
                           <button
                             type="button"
@@ -396,35 +566,57 @@ export default function Barang() {
             </TableWrap>
           </div>
 
-          {/* Kartu mobile */}
+          {/* Kartu Mobile */}
           <div className="grid gap-3 md:hidden" data-testid="daftar-barang-card">
             {rows.map((p, i) => (
               <MobileProductCard
                 key={p.id}
                 product={p}
-                index={(safePage - 1) * PAGE_SIZE + i + 1}
-                onPreview={openDetail}
-                onEdit={openForm}
+                index={(safePage - 1) * pageSize + i + 1}
+                onPreview={() => setDetail(p)}
+                onEdit={(item) => {
+                  setEditing(item);
+                  setFormOpen(true);
+                }}
+                onDuplicate={handleDuplicate}
+                onToggleActive={handleToggleActive}
                 onDelete={setDeleteTarget}
               />
             ))}
           </div>
+
+          {/* Pagination & Pilihan Jumlah Tampilan per Halaman */}
+          <div className="card mt-4 flex flex-wrap items-center justify-between gap-3 p-3">
+            <div className="flex items-center gap-2 text-xs text-ink-soft">
+              <span>Tampilkan:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(1);
+                }}
+                className="input py-1 px-2 text-xs font-bold"
+              >
+                <option value={5}>5 per halaman</option>
+                <option value={10}>10 per halaman</option>
+                <option value={20}>20 per halaman</option>
+                <option value={50}>50 per halaman</option>
+              </select>
+            </div>
+
+            <Pagination
+              page={safePage}
+              totalPages={totalPages}
+              total={filtered.length}
+              from={(safePage - 1) * pageSize + 1}
+              to={Math.min(safePage * pageSize, filtered.length)}
+              onPage={setPage}
+            />
+          </div>
         </>
       )}
 
-      {filtered.length > 0 && (
-        <div className="mt-4 card">
-          <Pagination
-            page={safePage}
-            totalPages={totalPages}
-            total={filtered.length}
-            from={(safePage - 1) * PAGE_SIZE + 1}
-            to={Math.min(safePage * PAGE_SIZE, filtered.length)}
-            onPage={setPage}
-          />
-        </div>
-      )}
-
+      {/* Modal Form Tambah / Edit / Duplikasi */}
       <ProductFormModal
         open={formOpen}
         onClose={() => {
@@ -435,6 +627,10 @@ export default function Barang() {
         onSave={handleSave}
       />
 
+      {/* Modal Detail Lengkap Barang */}
+      <ProductDetailModal product={detail} onClose={() => setDetail(null)} />
+
+      {/* Modal Konfirmasi Hapus */}
       <ConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
@@ -450,136 +646,94 @@ export default function Barang() {
           setDeleteTarget(null);
         }}
       />
-
-      <ProductDetailModal
-        product={detail}
-        onClose={() => setDetail(null)}
-        onEdit={(p) => {
-          setDetail(null);
-          openForm(p);
-        }}
-        onAddStock={(p) => {
-          setDetail(null);
-          navigate('/stok', { state: { openAdjustFor: p.id } });
-        }}
-        onCreateOrder={(p) => {
-          setDetail(null);
-          navigate('/toko', { state: { storeId: p.storeIds?.[0] || '', addProductId: p.id } });
-        }}
-        onShowHistory={(p) => {
-          setDetail(null);
-          navigate('/stok', { state: { showHistoryFor: p.id } });
-        }}
-      />
     </div>
   );
 }
 
-function FilterChip({ active, onClick, children }) {
+// Kartu Ringkas untuk Tampilan Mobile
+function MobileProductCard({
+  product: p,
+  index,
+  onPreview,
+  onEdit,
+  onDuplicate,
+  onToggleActive,
+  onDelete,
+}) {
+  const isActive = p.active !== false;
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cx(
-        'inline-flex items-center rounded-full px-3 py-1.5 text-xs font-bold transition active:scale-95',
-        active
-          ? 'bg-primary text-white shadow-soft'
-          : 'bg-white text-ink-soft ring-1 ring-line hover:bg-primary-soft hover:text-ink'
-      )}
+    <div
+      className={`card space-y-3 p-4 transition ${
+        !isActive ? 'bg-background/40 opacity-75' : 'bg-white'
+      }`}
     >
-      {children}
-    </button>
-  );
-}
+      <div className="flex items-start gap-3">
+        <ProductImage product={p} size="md" showBadges={false} onClick={() => onPreview(p)} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => onPreview(p)}
+              className="text-left text-sm font-bold text-ink hover:text-primary leading-snug"
+            >
+              {p.name}
+            </button>
+            <span className="shrink-0 text-[10px] font-semibold text-ink-soft">#{index}</span>
+          </div>
 
-function StockCell({ qty, st, quick, baseName }) {
-  const badge = STOCK_BADGE[st];
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <span
-        className={cx(
-          'inline-flex items-baseline gap-1 rounded-lg px-2.5 py-1 font-bold',
-          qty <= 0 ? 'bg-rose-50 text-rose-600' : 'bg-primary-soft text-primary'
-        )}
-      >
-        {formatQty(quick.value)} {quick.unit?.name || baseName}
-      </span>
-      {badge && (
-        <span className={cx('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold', badge.cls)}>
-          <badge.icon className="h-3 w-3" /> {badge.label}
-        </span>
-      )}
-      {st === 'tersedia' && (
-        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
-          Tersedia
-        </span>
-      )}
-    </div>
-  );
-}
-
-function MobileProductCard({ product, index, onPreview, onEdit, onDelete }) {
-  const { stores, stockOfProduct } = useApp();
-  const stock = stockOfProduct(product.id);
-  const qty = stock ? Number(stock.quantity) || 0 : 0;
-  const st = stockStatus(product, qty);
-  const quick = pickUnit(product.units, qty);
-  const badge = STOCK_BADGE[st];
-  const basePrice = Number(
-    (product.units || []).find((u) => Number(u.factor) === 1)?.price || (product.units || [])[0]?.price || 0
-  );
-  const supps = product.storeIds
-    .map((id) => stores.find((s) => s.id === id)?.name)
-    .filter(Boolean);
-  const shown = supps.slice(0, 2);
-  return (
-    <div className="card flex items-start gap-3 p-3.5">
-      <ProductImage product={product} size="md" onClick={() => onPreview(product)} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-start justify-between gap-2">
-          <button
-            type="button"
-            onClick={() => onPreview(product)}
-            className="truncate text-left text-sm font-bold text-ink hover:text-primary"
-          >
-            {product.name}
-          </button>
-          <span className="shrink-0 text-[10px] font-semibold text-ink-soft">#{index}</span>
-        </div>
-        <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-ink-soft">
-          {product.category && <Chip tone="violet">{product.category}</Chip>}
-          {shown.length > 0 && (
-            <span className="truncate">
-              {shown.join(' • ')}
-              {supps.length > shown.length ? ` • +${supps.length - shown.length}` : ''}
-            </span>
-          )}
-        </div>
-        <p className="mt-1 text-sm font-extrabold text-primary">{rupiah(basePrice)}</p>
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          <span
-            className={cx(
-              'inline-flex items-baseline gap-1 rounded-lg px-2 py-0.5 text-xs font-bold',
-              qty <= 0 ? 'bg-rose-50 text-rose-600' : 'bg-primary-soft text-primary'
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            {p.category && <Chip tone="violet">{p.category}</Chip>}
+            {!isActive && (
+              <span className="rounded-md bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-600">
+                Nonaktif
+              </span>
             )}
-          >
-            {formatQty(quick.value)} {quick.unit?.name || unitBaseName(product)}
-          </span>
-          {badge && (
-            <span className={cx('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold', badge.cls)}>
-              <badge.icon className="h-3 w-3" /> {badge.label}
-            </span>
-          )}
-          {st === 'tersedia' && (
-            <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
-              Tersedia
-            </span>
-          )}
+            {p.featured && (
+              <span className="rounded-md bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                Unggulan
+              </span>
+            )}
+            {p.promo && (
+              <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                Promo
+              </span>
+            )}
+          </div>
         </div>
-        <div className="mt-2 flex items-center justify-end gap-1 border-t border-line pt-2">
+      </div>
+
+      {/* Satuan & Harga Vertikal */}
+      <div className="rounded-xl border border-line bg-surface/40 p-2.5 text-xs space-y-1">
+        {(p.units || []).map((u) => {
+          const isBase = Number(u.factor) === 1;
+          return (
+            <div key={u.id} className="flex items-center justify-between">
+              <span className="text-ink-soft">
+                {u.name} {isBase ? '(utama)' : `(1=${formatQty(u.factor)})`}
+              </span>
+              <span className="font-bold text-primary">{rupiah(u.price)}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Keterangan Promo / Deskripsi */}
+      {(p.promoDescription || p.description) && (
+        <p className="text-xs text-ink-soft line-clamp-2 leading-relaxed">
+          {p.promoDescription || p.description}
+        </p>
+      )}
+
+      {/* Aksi Baris Mobile */}
+      <div className="flex items-center justify-between border-t border-line pt-2 text-xs">
+        <Btn size="sm" variant="soft" icon={Eye} onClick={() => onPreview(p)}>
+          Detail
+        </Btn>
+        <div className="flex items-center gap-1">
           <button
             type="button"
-            onClick={() => onEdit(product)}
+            onClick={() => onEdit(p)}
             title="Edit barang"
             className="rounded-lg p-2 text-ink-soft transition hover:bg-primary-soft hover:text-primary active:scale-95"
           >
@@ -587,33 +741,44 @@ function MobileProductCard({ product, index, onPreview, onEdit, onDelete }) {
           </button>
           <button
             type="button"
-            onClick={() => onDelete(product)}
+            onClick={() => onDuplicate(p)}
+            title="Duplikasi barang"
+            className="rounded-lg p-2 text-ink-soft transition hover:bg-sky-50 hover:text-sky-600 active:scale-95"
+          >
+            <Copy className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onToggleActive(p)}
+            title={isActive ? 'Nonaktifkan' : 'Aktifkan'}
+            className="rounded-lg p-2 text-ink-soft transition hover:bg-amber-50 hover:text-amber-600 active:scale-95"
+          >
+            <Power className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onDelete(p)}
             title="Hapus barang"
             className="rounded-lg p-2 text-ink-soft transition hover:bg-rose-50 hover:text-rose-500 active:scale-95"
           >
             <Trash2 className="h-4 w-4" />
           </button>
-          <Btn size="sm" variant="soft" className="ml-auto" onClick={() => onPreview(product)}>
-            Detail
-          </Btn>
         </div>
       </div>
     </div>
   );
 }
 
-function unitBaseName(p) {
-  const base = (p.units || []).find((u) => u.factor === 1);
-  return base ? base.name : (p.units || [])[0]?.name || 'pcs';
-}
-
+// Modal Form Tambah / Edit / Duplikasi Barang
 function ProductFormModal({ open, onClose, editing, onSave }) {
   const { stores, products } = useApp();
   const categorySuggestions = useMemo(() => distinctCategories(products), [products]);
+
   const [name, setName] = useState('');
   const [category, setCategory] = useState('');
   const [image, setImage] = useState('');
   const [minStock, setMinStock] = useState('');
+  const [active, setActive] = useState(true);
   const [storesSel, setStoreSel] = useState([]);
   const [units, setUnits] = useState([]);
   const [promo, setPromo] = useState(false);
@@ -628,12 +793,13 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
   useEffect(() => {
     if (!open) return;
     if (editing) {
-      setName(editing.name);
+      setName(editing.name || '');
       setCategory(editing.category || '');
       setImage(editing.image || '');
       setMinStock(editing.minStock != null ? String(editing.minStock) : '');
+      setActive(editing.active !== false);
       setStoreSel(
-        editing.storeIds
+        (editing.storeIds || [])
           .map((id) => {
             const s = stores.find((x) => x.id === id);
             return s ? { id: s.id, name: s.name } : null;
@@ -650,9 +816,9 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
       );
       setPromo(!!editing.promo);
       setPromoTitle(editing.promoTitle || '');
-      setPromoDesc(editing.promoDescription || '');
+      setPromoDesc(editing.promoDescription || editing.promoDesc || '');
       setAdvertisement(!!editing.advertisement);
-      setAdDesc(editing.advertisementDescription || '');
+      setAdDesc(editing.advertisementDescription || editing.adDesc || '');
       setFeatured(!!editing.featured);
       setDescription(editing.description || '');
     } else {
@@ -660,8 +826,9 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
       setCategory('');
       setImage('');
       setMinStock('');
+      setActive(true);
       setStoreSel([]);
-      setUnits([{ id: uid('u-'), name: '', factor: '1', price: '' }]);
+      setUnits([{ id: uid('u-'), name: 'pcs', factor: '1', price: '' }]);
       setPromo(false);
       setPromoTitle('');
       setPromoDesc('');
@@ -677,15 +844,11 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
     setUnits((prev) => prev.map((u) => (u.id === key ? { ...u, ...patch } : u)));
   const removeUnit = (key) => setUnits((prev) => prev.filter((u) => u.id !== key));
   const addUnit = () =>
-    setUnits((prev) => [
-      ...prev,
-      { id: uid('u-'), name: '', factor: '', price: '' },
-    ]);
+    setUnits((prev) => [...prev, { id: uid('u-'), name: '', factor: '', price: '' }]);
 
   const submit = () => {
     const errs = {};
     if (!name.trim()) errs.name = 'Nama barang wajib diisi.';
-    if (storesSel.length === 0) errs.stores = 'Pilih minimal satu toko.';
 
     const unitErrs = {};
     const factors = units.map((u) => Number(u.factor) || 0);
@@ -695,16 +858,22 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
       units.forEach((u, i) => {
         const key = `u${i}`;
         if (!u.name.trim()) unitErrs[key] = 'Nama satuan wajib diisi.';
-        else if (units.some((x, j) => j !== i && x.name.trim().toLowerCase() === u.name.trim().toLowerCase()))
+        else if (
+          units.some(
+            (x, j) => j !== i && x.name.trim().toLowerCase() === u.name.trim().toLowerCase()
+          )
+        )
           unitErrs[key] = 'Nama satuan ganda.';
         if (u.factor === '' || !(Number(u.factor) > 0)) unitErrs[key] = 'Faktor wajib > 0.';
-        else if (i > 0 && Number(u.factor) === 1) unitErrs[key] = 'Faktor 1 hanya untuk satuan dasar.';
+        else if (i > 0 && Number(u.factor) === 1)
+          unitErrs[key] = 'Faktor 1 hanya untuk satuan dasar.';
         if (u.price === '' || !(Number(u.price) > 0)) unitErrs[key] = 'Harga wajib > 0.';
       });
       if (!factors.includes(1)) errs.units = 'Wajib ada satu satuan dasar (faktor 1).';
       if (Object.keys(unitErrs).length) errs.unitErrs = unitErrs;
     }
-    if (minStock !== '' && !(Number(minStock) >= 0)) errs.minStock = 'Min stok berupa angka 0 atau lebih.';
+    if (minStock !== '' && !(Number(minStock) >= 0))
+      errs.minStock = 'Min stok berupa angka 0 atau lebih.';
 
     setErrors(errs);
     if (Object.keys(errs).length) return;
@@ -714,6 +883,7 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
       category: category.trim(),
       image,
       minStock: minStock === '' ? '' : Number(minStock),
+      active,
       stores: storesSel,
       units,
       promo,
@@ -727,16 +897,20 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
   };
 
   const unitErrs = errors.unitErrs || {};
-
-  const sectionTitle =
-    'text-[11px] font-bold uppercase tracking-wider text-primary';
+  const sectionTitle = 'text-[11px] font-bold uppercase tracking-wider text-primary';
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title={editing ? `Edit Barang — ${editing.name}` : 'Tambah Barang'}
-      subtitle="Atur foto, kategori, satuan & harga acuan per satuan."
+      title={
+        editing && editing._isDuplicate
+          ? 'Duplikasi Barang'
+          : editing
+          ? `Edit Barang — ${editing.name}`
+          : 'Tambah Barang'
+      }
+      subtitle="Atur informasi master barang, satuan, harga acuan, dan toko pemasok."
       size="lg"
       footer={
         <>
@@ -744,20 +918,42 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
             Batal
           </Btn>
           <Btn icon={Package} onClick={submit}>
-            {editing ? 'Simpan Perubahan' : 'Simpan Barang'}
+            {editing && !editing._isDuplicate ? 'Simpan Perubahan' : 'Simpan Barang'}
           </Btn>
         </>
       }
     >
       <div className="space-y-6">
+        {/* Status Barang: Aktif / Nonaktif */}
+        <section className="rounded-2xl border border-line bg-white p-4 sm:p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className={sectionTitle}>Status Barang</p>
+              <p className="mt-0.5 text-xs text-ink-soft">
+                Barang aktif akan muncul di pencatatan stok dan pesanan warung.
+              </p>
+            </div>
+            <Toggle
+              checked={active}
+              onChange={setActive}
+              label={active ? 'Barang Aktif' : 'Barang Nonaktif'}
+            />
+          </div>
+        </section>
+
         {/* Foto Barang */}
         <section className="rounded-2xl border border-line bg-white p-4 sm:p-5">
           <p className={sectionTitle}>Foto Barang</p>
           <p className="mt-1 text-xs text-ink-soft">
-            Preview besar rasio 1:1. Unggah dari galeri atau ambil langsung dari kamera.
+            Preview rasio 1:1. Unggah dari galeri atau kamera.
           </p>
           <div className="mt-4">
-            <ImageUpload value={image} onChange={setImage} label="Foto Barang" hint="Foto dipakai di master barang, stok, & informasi barang." />
+            <ImageUpload
+              value={image}
+              onChange={setImage}
+              label="Foto Barang"
+              hint="Foto dipakai di master barang & panel informasi barang."
+            />
           </div>
         </section>
 
@@ -766,11 +962,15 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
           <p className={sectionTitle}>Informasi Dasar</p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <Field label="Nama Barang" required error={errors.name}>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="contoh: Gula Pasir" />
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="contoh: Gula Pasir"
+              />
             </Field>
             <Field
               label="Kategori"
-              hint="Opsional. Saran otomatis dari Kategori barang yang sudah ada; mengetik nilai baru akan menciptakan kategori baru."
+              hint="Ketik kategori baru atau pilih dari saran."
               error={errors.category}
             >
               <Input
@@ -786,8 +986,8 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
               </datalist>
             </Field>
             <Field
-              label="Minimal Stok"
-              hint="Opsional. Muncul badge “Stok Menipis” bila stok di bawah nilai ini (satuan dasar)."
+              label="Batas Stok Minimum"
+              hint="Muncul tanda 'Hampir Habis' bila stok di bawah angka ini."
               error={errors.minStock}
             >
               <Input
@@ -801,27 +1001,27 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
           </div>
         </section>
 
-        {/* Toko Pemasok */}
+        {/* Toko Pemasok (Dipertahankan untuk Relasi Pesanan) */}
         <section className="rounded-2xl border border-line bg-white p-4 sm:p-5">
-          <p className={sectionTitle}>Toko Pemasok</p>
+          <p className={sectionTitle}>Toko Pemasok Terkait</p>
           <p className="mt-1 text-xs text-ink-soft">
-            Barang dapat tersedia di lebih dari satu toko pemasok.
+            Pilih toko pemasok untuk mempermudah saat membuat pesanan pembelian barang.
           </p>
           <div className="mt-4">
-            <Field label="Pilih Toko" required error={errors.stores}>
+            <Field label="Pilih Toko Pemasok (opsional)" error={errors.stores}>
               <StorePicker stores={stores} value={storesSel} onChange={setStoreSel} />
             </Field>
           </div>
         </section>
 
-        {/* Satuan & Konversi */}
+        {/* Satuan & Harga */}
         <section className="rounded-2xl border border-line bg-white p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className={sectionTitle}>Satuan & Konversi</p>
+              <p className={sectionTitle}>Satuan & Harga</p>
               <p className="mt-1 text-xs text-ink-soft">
-                Satuan dasar (faktor 1) dipakai untuk perhitungan stok internal. Konversi = jumlah satuan dasar
-                per 1 satuan (contoh: dus = 40 pcs → faktor 40). Harga acuan per satuan untuk pesanan.
+                Satuan dasar (faktor 1) dipakai sebagai satuan acuan. Masukkan harga beli/acuan
+                untuk masing-masing satuan.
               </p>
             </div>
             <Btn variant="soft" size="sm" icon={Plus} onClick={addUnit}>
@@ -846,7 +1046,10 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
               {units.map((u, i) => {
                 const e = unitErrs[`u${i}`];
                 return (
-                  <div key={u.id} className="grid grid-cols-[1fr_68px_84px_28px] items-start gap-2 sm:grid-cols-[1fr_90px_130px_32px]">
+                  <div
+                    key={u.id}
+                    className="grid grid-cols-[1fr_68px_84px_28px] items-start gap-2 sm:grid-cols-[1fr_90px_130px_32px]"
+                  >
                     <div>
                       <Input
                         value={u.name}
@@ -866,9 +1069,7 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
                         disabled={i === 0}
                         title="Jumlah satuan dasar per 1 satuan ini"
                       />
-                      {i === 0 && (
-                        <p className="mt-0.5 text-[10px] text-ink-soft">Satuan dasar</p>
-                      )}
+                      {i === 0 && <p className="mt-0.5 text-[10px] text-ink-soft">Satuan dasar</p>}
                     </div>
                     <div>
                       <Input
@@ -901,37 +1102,32 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
           </div>
         </section>
 
-        {/* Keterangan Khusus Barang */}
+        {/* Keterangan & Promosi */}
         <section className="rounded-2xl border border-line bg-white p-4 sm:p-5">
-          <p className={sectionTitle}>Keterangan Khusus Barang</p>
+          <p className={sectionTitle}>Keterangan & Promosi</p>
           <p className="mt-1 text-xs text-ink-soft">
-            Tandai barang unggulan, promo, ataupun penawaran khusus. Semua isian manual sesuai kebutuhan toko.
+            Tandai barang unggulan, promo aktif, atau penawaran khusus bila diperlukan.
           </p>
           <div className="mt-4 grid gap-x-5 gap-y-3 sm:grid-cols-2">
             <Toggle checked={featured} onChange={setFeatured} label="Barang Unggulan" />
             <Toggle checked={promo} onChange={setPromo} label="Promo" />
-            <Toggle checked={advertisement} onChange={setAdvertisement} label="Iklan Promo" />
+            <Toggle checked={advertisement} onChange={setAdvertisement} label="Iklan / Penawaran" />
           </div>
           <div className="mt-4 space-y-4">
-            {featured && (
-              <p className="rounded-xl bg-primary-soft/50 px-3.5 py-2.5 text-xs text-ink-soft">
-                Barang ini tampil di tab <b>Informasi Barang</b> pada halaman Stok.
-              </p>
-            )}
             {promo && (
               <>
-                <Field label="Judul Promo" hint="Nama singkat promo, contoh: “Promo Gula Pasir”.">
+                <Field label="Judul Promo" hint="Contoh: “Promo Diskon Pembelian Karungan”.">
                   <Input
                     value={promoTitle}
                     onChange={(e) => setPromoTitle(e.target.value)}
-                    placeholder="contoh: Promo Gula Pasir"
+                    placeholder="contoh: Promo Diskon Karungan"
                   />
                 </Field>
-                <Field label="Nilai / Jenis Promo & Keterangan">
+                <Field label="Keterangan Promo">
                   <Textarea
                     value={promoDesc}
                     onChange={(e) => setPromoDesc(e.target.value)}
-                    placeholder="contoh: Hemat 5% saat membeli 2 karung sekaligus."
+                    placeholder="contoh: Hemat Rp 2.000 saat membeli 2 karung sekaligus."
                   />
                 </Field>
               </>
@@ -941,15 +1137,15 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
                 <Textarea
                   value={adDesc}
                   onChange={(e) => setAdDesc(e.target.value)}
-                  placeholder="contoh: Stok kembali tersedia! Bisa antar."
+                  placeholder="contoh: Stok baru datang, kualitas premium."
                 />
               </Field>
             )}
-            <Field label="Deskripsi Produk" hint="Opsional. Dijadikan info tambahan tentang barang ini.">
+            <Field label="Deskripsi Produk" hint="Deskripsi umum produk barang.">
               <Textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="contoh: Gula pasir putih kemasan 1 kg, harga grosir lebih murah."
+                placeholder="contoh: Gula pasir kemasan murni berkualitas."
               />
             </Field>
           </div>

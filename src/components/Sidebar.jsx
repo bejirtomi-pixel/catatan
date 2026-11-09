@@ -32,12 +32,16 @@ export default function Sidebar({ open, onClose }) {
         )}
       >
         <div className="flex items-center gap-3 border-b border-line px-5 py-4">
-          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary text-xl shadow-soft">
-            <span className="leading-none">🏪</span>
-          </span>
+          <Logo
+            src={settings.logo}
+            boxClassName="h-11 w-11 rounded-2xl bg-primary-soft text-xl shadow-soft"
+            alt={settings.name || 'Logo warung'}
+          />
           <div className="min-w-0">
-            <p className="truncate text-sm font-extrabold text-ink">Warung Madura</p>
-            <p className="truncate text-[11px] font-medium text-ink-soft">Catatan Stok & Pesanan</p>
+            <p className="truncate text-sm font-extrabold text-ink">{settings.name || 'Warung Madura'}</p>
+            <p className="truncate text-[11px] font-medium text-ink-soft">
+              {settings.description || 'Catatan Stok & Pesanan'}
+            </p>
           </div>
           <button
             type="button"

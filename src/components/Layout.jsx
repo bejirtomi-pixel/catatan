@@ -5,6 +5,7 @@ import { BarChart3, Boxes, ClipboardList, LayoutDashboard, Menu, Package, Settin
 import { useApp } from '../context/AppContext';
 import { cx } from './UI';
 import Logo from './Logo';
+import NotificationBell from './NotificationBell';
 import Sidebar, { NAV } from './Sidebar';
 import ToastHost from './Toast';
 
@@ -42,6 +43,7 @@ export default function Layout() {
             <p className="hidden text-[11px] text-ink-soft sm:block">Catatan Stok &amp; Pesanan</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <NotificationBell />
             <Link
               to="/pengaturan"
               aria-label="Pengaturan"
