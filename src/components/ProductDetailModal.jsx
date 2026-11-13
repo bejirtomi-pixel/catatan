@@ -14,6 +14,7 @@ import {
 import { useApp } from '../context/AppContext';
 import {
   baseUnit,
+  formatDateTime,
   formatQty,
   pickUnit,
   qtyText,
@@ -42,7 +43,7 @@ export default function ProductDetailModal({
   onCreateOrder,
   onShowHistory,
 }) {
-  const { stockOfProduct, baseNameOf } = useApp();
+  const { stockOfProduct, baseNameOf, movements } = useApp();
   const navigate = useNavigate();
   if (!product) return null;
 
@@ -270,6 +271,66 @@ export default function ProductDetailModal({
                 {product.description}
               </p>
             )}
+          </div>
+
+          {/* Riwayat Mutasi Stok Terakhir */}
+          <div className="rounded-2xl border border-line bg-surface p-3.5 text-xs">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-bold uppercase tracking-wider text-primary">
+                Riwayat Mutasi Terakhir
+              </p>
+              <span className="text-[10px] text-ink-soft">Maks. 5 mutasi terakhir</span>
+            </div>
+            {(() => {
+              const prodMovements = (movements || [])
+                .filter((m) => m.productId === product.id)
+                .slice(0, 5);
+
+              if (prodMovements.length === 0) {
+                return (
+                  <p className="text-xs italic text-ink-soft text-center py-2">
+                    Belum ada catatan mutasi stok untuk barang ini.
+                  </p>
+                );
+              }
+
+              return (
+                <div className="space-y-1.5">
+                  {prodMovements.map((m) => (
+                    <div
+                      key={m.id}
+                      className="flex items-center justify-between rounded-xl border border-line/60 bg-white px-2.5 py-1.5"
+                    >
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-extrabold uppercase ${
+                              m.type === 'masuk'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : m.type === 'keluar'
+                                ? 'bg-rose-50 text-rose-700'
+                                : 'bg-amber-50 text-amber-700'
+                            }`}
+                          >
+                            {m.type}
+                          </span>
+                          <span className="font-bold text-ink">
+                            {m.diffBase > 0 ? `+${formatQty(m.diffBase)}` : formatQty(m.diffBase)} {m.unitBaseName}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[10px] text-ink-soft">
+                          {m.note ? `${m.note} • ` : ''}{formatDateTime(m.timestamp)}
+                        </p>
+                      </div>
+                      <div className="text-right text-[11px]">
+                        <span className="text-ink-soft">Sisa: </span>
+                        <span className="font-extrabold text-ink">{formatQty(m.afterBase)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         </div>
       </Modal>

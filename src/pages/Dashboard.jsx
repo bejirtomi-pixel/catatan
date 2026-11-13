@@ -292,8 +292,45 @@ export default function Dashboard() {
     }
   };
 
+  const isBackupOverdue = useMemo(() => {
+    if (!settings.lastBackupAt) return true;
+    const lastDate = new Date(settings.lastBackupAt);
+    if (isNaN(lastDate.getTime())) return true;
+    const now = new Date();
+    const diffMs = now.getTime() - lastDate.getTime();
+    const diffDays = diffMs / (1000 * 60 * 60 * 24);
+    return diffDays >= 7;
+  }, [settings.lastBackupAt]);
+
   return (
     <div className="space-y-6 pb-12">
+      {/* Pengingat Cadangan Data Berkala (> 7 Hari atau Belum Pernah Cadangkan) */}
+      {isBackupOverdue && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50/80 p-3.5 sm:px-4 text-xs shadow-soft transition">
+          <div className="flex items-center gap-2.5 text-amber-950">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-amber-200/70 text-amber-800">
+              <AlertTriangle className="h-4 w-4" />
+            </span>
+            <div>
+              <p className="font-bold">
+                Pengingat Cadangan Data Warung
+              </p>
+              <p className="text-[11px] text-amber-900/80">
+                {settings.lastBackupAt
+                  ? `Cadangan terakhir dilakukan lebih dari 7 hari lalu. Disarankan mengunduh cadangan terbaru untuk keamanan data.`
+                  : `Data warung belum pernah dicadangkan ke berkas. Disarankan mengunduh cadangan untuk mencegah kehilangan data.`}
+              </p>
+            </div>
+          </div>
+          <Link
+            to="/pengaturan"
+            className="inline-flex items-center gap-1 rounded-xl bg-amber-200/80 px-3 py-1.5 font-bold text-amber-950 hover:bg-amber-300/80 transition text-xs"
+          >
+            Buka Pengaturan Cadangan <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      )}
+
       {/* ============================================================ */}
       {/* 1. RINGKASAN INVENTARIS BARANG */}
       {/* ============================================================ */}

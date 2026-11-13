@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
+  Archive,
+  ArchiveRestore,
   CheckCircle2,
   Copy,
   Eye,
@@ -55,6 +57,8 @@ export default function Barang() {
     stores,
     saveProduct,
     deleteProduct,
+    archiveProduct,
+    checkProductReferences,
     updateProduct,
     createStore,
     pushToast,
@@ -66,7 +70,7 @@ export default function Barang() {
   // Filter states
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('semua');
-  const [statusFilter, setStatusFilter] = useState('semua'); // 'semua' | 'aktif' | 'nonaktif'
+  const [statusFilter, setStatusFilter] = useState('semua'); // 'semua' | 'aktif' | 'arsip'
 
   // Pagination & Display settings
   const [page, setPage] = useState(1);
@@ -76,6 +80,7 @@ export default function Barang() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [blockedDeleteTarget, setBlockedDeleteTarget] = useState(null);
   const [detail, setDetail] = useState(null);
 
   // Handle edit from navigation
@@ -106,10 +111,10 @@ export default function Barang() {
       // Filter Kategori
       if (cat !== 'semua' && (p.category || '').trim() !== cat) return false;
 
-      // Filter Status Aktif / Nonaktif
-      const isActive = p.active !== false;
-      if (statusFilter === 'aktif' && !isActive) return false;
-      if (statusFilter === 'nonaktif' && isActive) return false;
+      // Filter Status Aktif / Diarsipkan
+      const isArchived = !!p.archived || p.active === false;
+      if (statusFilter === 'aktif' && isArchived) return false;
+      if (statusFilter === 'arsip' && !isArchived) return false;
 
       // Filter Pencarian nama barang, kategori, deskripsi, promo
       if (!q) return true;
@@ -163,11 +168,25 @@ export default function Barang() {
     setFormOpen(true);
   };
 
-  // Toggle status aktif / nonaktif
+  // Toggle status aktif / arsipkan
   const handleToggleActive = (p) => {
-    const nextActive = p.active === false ? true : false;
-    updateProduct(p.id, { active: nextActive });
-    pushToast(`Status “${p.name}” diubah menjadi ${nextActive ? 'Aktif' : 'Nonaktif'}`);
+    const isCurrentlyActive = p.active !== false && !p.archived;
+    if (isCurrentlyActive) {
+      archiveProduct(p.id, true);
+      pushToast(`Barang “${p.name}” telah diarsipkan.`);
+    } else {
+      archiveProduct(p.id, false);
+      pushToast(`Barang “${p.name}” telah diaktifkan kembali.`);
+    }
+  };
+
+  const handleDeleteClick = (p) => {
+    const refCheck = checkProductReferences(p.id);
+    if (refCheck.hasReferences) {
+      setBlockedDeleteTarget({ product: p, refCheck });
+    } else {
+      setDeleteTarget(p);
+    }
   };
 
   const handleSave = (data) => {
@@ -227,6 +246,7 @@ export default function Barang() {
       featured: !!data.featured,
       description: data.description || '',
       active: data.active !== false,
+      archived: data.active === false ? true : false,
     });
 
     pushToast(
@@ -287,8 +307,8 @@ export default function Barang() {
               </select>
             </label>
 
-            {/* Filter Status Aktif / Nonaktif */}
-            <div className="min-w-[12rem]">
+            {/* Filter Status Aktif / Diarsipkan */}
+            <div className="min-w-[13rem]">
               <span className="label">Status Barang</span>
               <div className="flex rounded-xl border border-line bg-surface/50 p-1 text-xs">
                 <button
@@ -322,16 +342,16 @@ export default function Barang() {
                 <button
                   type="button"
                   onClick={() => {
-                    setStatusFilter('nonaktif');
+                    setStatusFilter('arsip');
                     setPage(1);
                   }}
                   className={`flex-1 rounded-lg py-1 px-2.5 font-bold transition ${
-                    statusFilter === 'nonaktif'
+                    statusFilter === 'arsip'
                       ? 'bg-primary text-white shadow-soft'
                       : 'text-ink-soft hover:text-ink'
                   }`}
                 >
-                  Nonaktif
+                  Diarsipkan
                 </button>
               </div>
             </div>
@@ -417,11 +437,16 @@ export default function Barang() {
                           >
                             {p.name}
                           </button>
-                          {p.active === false && (
+                          {p.archived ? (
+                            <span className="mt-1 inline-flex items-center gap-1 rounded-md bg-stone-100 px-2 py-0.5 text-[10px] font-bold text-stone-600">
+                              <Archive className="h-3 w-3" />
+                              Diarsipkan
+                            </span>
+                          ) : p.active === false ? (
                             <span className="mt-1 inline-block rounded-md bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-600">
                               Nonaktif
                             </span>
-                          )}
+                          ) : null}
                         </div>
                       </TD>
 
@@ -551,7 +576,7 @@ export default function Barang() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setDeleteTarget(p)}
+                            onClick={() => handleDeleteClick(p)}
                             title="Hapus barang"
                             className="rounded-lg p-2 text-ink-soft transition hover:bg-rose-50 hover:text-rose-500 active:scale-95"
                           >
@@ -580,7 +605,7 @@ export default function Barang() {
                 }}
                 onDuplicate={handleDuplicate}
                 onToggleActive={handleToggleActive}
-                onDelete={setDeleteTarget}
+                onDelete={handleDeleteClick}
               />
             ))}
           </div>
@@ -630,18 +655,73 @@ export default function Barang() {
       {/* Modal Detail Lengkap Barang */}
       <ProductDetailModal product={detail} onClose={() => setDetail(null)} />
 
-      {/* Modal Konfirmasi Hapus */}
+      {/* Modal Peringatan Hapus Diblokir (Memiliki Referensi Riwayat) */}
+      <Modal
+        open={!!blockedDeleteTarget}
+        onClose={() => setBlockedDeleteTarget(null)}
+        title="Barang Tidak Dapat Dihapus Permanen"
+        size="md"
+        footer={
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Btn variant="soft" onClick={() => setBlockedDeleteTarget(null)}>
+              Tutup
+            </Btn>
+            <Btn
+              variant="primary"
+              icon={Archive}
+              onClick={() => {
+                if (blockedDeleteTarget?.product) {
+                  archiveProduct(blockedDeleteTarget.product.id, true);
+                  pushToast(`Barang “${blockedDeleteTarget.product.name}” berhasil diarsipkan.`);
+                }
+                setBlockedDeleteTarget(null);
+              }}
+            >
+              Arsipkan Barang Saja
+            </Btn>
+          </div>
+        }
+      >
+        {blockedDeleteTarget && (
+          <div className="space-y-4 text-sm text-ink">
+            <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3.5 text-xs text-amber-900 leading-relaxed">
+              <p className="font-semibold text-amber-950">
+                Barang “{blockedDeleteTarget.product.name}” masih memiliki riwayat operasional di warung:
+              </p>
+              <ul className="mt-2 list-disc pl-4 space-y-1">
+                {blockedDeleteTarget.refCheck.orderCount > 0 && (
+                  <li>Tercatat dalam <strong>{blockedDeleteTarget.refCheck.orderCount} pesanan pemasok</strong></li>
+                )}
+                {blockedDeleteTarget.refCheck.movementCount > 0 && (
+                  <li>Tercatat dalam <strong>{blockedDeleteTarget.refCheck.movementCount} riwayat mutasi stok</strong></li>
+                )}
+                {blockedDeleteTarget.refCheck.shortageCount > 0 && (
+                  <li>Tercatat dalam <strong>{blockedDeleteTarget.refCheck.shortageCount} daftar kekurangan / barang kosong</strong></li>
+                )}
+                {blockedDeleteTarget.refCheck.stockQty > 0 && (
+                  <li>Masih memiliki sisa fisik sebanyak <strong>{blockedDeleteTarget.refCheck.stockQty} unit</strong> di inventaris</li>
+                )}
+              </ul>
+            </div>
+            <p className="text-xs text-ink-soft leading-relaxed">
+              Menghapus barang ini secara permanen akan merusak laporan pembukuan dan integritas data riwayat warung. Sebagai gantinya, Anda disarankan untuk <strong>mengarsipkan</strong> barang ini agar tidak muncul lagi pada pemilihan pesanan aktif.
+            </p>
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal Konfirmasi Hapus Permanen (Aman, Tidak Ada Referensi) */}
       <ConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
-        title="Hapus Barang"
-        message={`Hapus ${deleteTarget?.name} dari master barang? Stok terkait ikut dihapus. Riwayat pesanan & barang kosong lama tetap tersimpan.`}
-        confirmLabel="Hapus"
+        title="Hapus Barang Permanen"
+        message={`Barang "${deleteTarget?.name}" belum memiliki riwayat pesanan, mutasi stok, maupun catatan kekurangan. Anda yakin ingin menghapus barang ini secara permanen?`}
+        confirmLabel="Hapus Permanen"
         danger
         onConfirm={() => {
           if (deleteTarget) {
             deleteProduct(deleteTarget.id);
-            pushToast('Barang berhasil dihapus');
+            pushToast('Barang berhasil dihapus secara permanen');
           }
           setDeleteTarget(null);
         }}
@@ -684,11 +764,16 @@ function MobileProductCard({
 
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             {p.category && <Chip tone="violet">{p.category}</Chip>}
-            {!isActive && (
+            {p.archived ? (
+              <span className="inline-flex items-center gap-1 rounded-md bg-stone-100 px-2 py-0.5 text-[10px] font-bold text-stone-600">
+                <Archive className="h-3 w-3" />
+                Diarsipkan
+              </span>
+            ) : !isActive ? (
               <span className="rounded-md bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-600">
                 Nonaktif
               </span>
-            )}
+            ) : null}
             {p.featured && (
               <span className="rounded-md bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
                 Unggulan

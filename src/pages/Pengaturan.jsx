@@ -90,6 +90,7 @@ export default function Pengaturan() {
     pushToast,
     buildBackup,
     importData,
+    validateBackup,
     stores,
     products,
     stocks,
@@ -275,20 +276,16 @@ export default function Pengaturan() {
     reader.onload = () => {
       try {
         const parsed = JSON.parse(String(reader.result));
-        if (!parsed || typeof parsed !== 'object') {
-          throw new Error('Berkas tidak berformat JSON yang valid.');
+        const validation = validateBackup(parsed);
+        if (!validation.valid) {
+          throw new Error(validation.reason || 'Format berkas cadangan tidak valid atau rusak.');
         }
 
-        const d = parsed.data && typeof parsed.data === 'object' ? parsed.data : parsed;
-        if (!Array.isArray(d.stores) || !Array.isArray(d.products)) {
-          throw new Error('Format cadangan tidak sesuai (data toko atau barang tidak ditemukan).');
-        }
-
-        setPendingImport(parsed);
+        setPendingImport({ payload: parsed, validation });
         setRestoreModalOpen(true);
       } catch (err) {
         setImportError(err.message || 'Berkas bukan JSON cadangan Warung Madura yang valid.');
-        pushToast('Gagal memvalidasi berkas cadangan.', 'error');
+        pushToast(err.message || 'Gagal memvalidasi berkas cadangan.', 'error');
       }
     };
     reader.onerror = () => {
@@ -300,31 +297,31 @@ export default function Pengaturan() {
 
   const getPendingImportSummary = () => {
     if (!pendingImport) return null;
-    const d =
-      pendingImport.data && typeof pendingImport.data === 'object'
-        ? pendingImport.data
-        : pendingImport;
-    const n = (x) => (Array.isArray(x) ? x.length : 0);
+    const validation = pendingImport.validation || validateBackup(pendingImport.payload || pendingImport);
+    if (!validation.valid) return null;
     return {
-      exportedAt: pendingImport.exportedAt || null,
-      storeName: d.settings?.name || 'Warung Madura',
-      stores: n(d.stores),
-      products: n(d.products),
-      stocks: n(d.stocks),
-      orders: n(d.orders),
-      movements: n(d.movements),
-      shortages: n(d.shortages),
+      exportedAt: validation.exportedAt || null,
+      version: validation.version || '1.0',
+      storeName: validation.summary.storeName,
+      stores: validation.summary.stores,
+      products: validation.summary.products,
+      stocks: validation.summary.stocks,
+      orders: validation.summary.orders,
+      movements: validation.summary.movements,
+      shortages: validation.summary.shortages,
+      integrity: validation.integrity,
     };
   };
 
   const executeRestore = () => {
     if (!pendingImport) return;
-    const res = importData(pendingImport);
+    const rawPayload = pendingImport.payload || pendingImport;
+    const res = importData(rawPayload);
     if (res.ok) {
       const d =
-        pendingImport.data && typeof pendingImport.data === 'object'
-          ? pendingImport.data
-          : pendingImport;
+        rawPayload.data && typeof rawPayload.data === 'object'
+          ? rawPayload.data
+          : rawPayload;
       if (d.settings && typeof d.settings === 'object') {
         setName(d.settings.name || 'Warung Madura');
         setDescription(d.settings.description || '');
@@ -665,6 +662,12 @@ export default function Pengaturan() {
                 onChange={() => toggleNotif('orderCreated')}
               />
               <ToggleRow
+                title="Pencatatan Penerimaan Barang"
+                desc="Beri tahu saat ada kedatangan barang dari pesanan pemasok dicatat masuk stok."
+                checked={!!notifConfig.orderReceiving}
+                onChange={() => toggleNotif('orderReceiving')}
+              />
+              <ToggleRow
                 title="Pesanan Diterima Sebagian"
                 desc="Beri tahu saat pengiriman pemasok belum lengkap."
                 checked={!!notifConfig.orderPartial}
@@ -1003,6 +1006,10 @@ export default function Pengaturan() {
                   <div className="flex items-center justify-between border-b border-line/60 pb-1.5">
                     <span className="text-ink-soft">Nama Toko Cadangan:</span>
                     <strong className="text-ink">{summary.storeName}</strong>
+                  </div>
+                  <div className="flex items-center justify-between border-b border-line/60 py-1.5">
+                    <span className="text-ink-soft">Versi Format Cadangan:</span>
+                    <span className="font-semibold text-ink">v{summary.version}</span>
                   </div>
                   <div className="flex items-center justify-between pt-1.5">
                     <span className="text-ink-soft">Waktu Ekspor:</span>

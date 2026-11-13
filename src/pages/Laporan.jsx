@@ -22,7 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { dateKey, formatDateTime, formatQty, rupiah, round2 } from '../utils/format';
+import { dateKey, formatDateTime, formatQty, getLocalDateString, rupiah, round2 } from '../utils/format';
 import {
   Btn,
   Chip,
@@ -195,6 +195,30 @@ export default function Laporan() {
     setPageRestock(1);
   };
 
+  const setQuickRange = (preset) => {
+    const today = new Date();
+    const todayStr = getLocalDateString(today);
+
+    if (preset === 'today') {
+      setStartDate(todayStr);
+      setEndDate(todayStr);
+    } else if (preset === '7days') {
+      const past = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6);
+      setStartDate(getLocalDateString(past));
+      setEndDate(todayStr);
+    } else if (preset === '30days') {
+      const past = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 29);
+      setStartDate(getLocalDateString(past));
+      setEndDate(todayStr);
+    } else if (preset === 'thisMonth') {
+      const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      setStartDate(getLocalDateString(startOfMonth));
+      setEndDate(todayStr);
+    }
+    setPagePesanan(1);
+    setPageKekurangan(1);
+  };
+
   // Helper Pagination
   const paginate = (items, pageNum) => {
     const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
@@ -210,7 +234,7 @@ export default function Laporan() {
 
   // 9. Ekspor Excel (CSV UTF-8)
   const handleExportCsv = (type) => {
-    let filename = `Laporan-${type}-${new Date().toISOString().split('T')[0]}.csv`;
+    let filename = `Laporan-${type}-${getLocalDateString()}.csv`;
     let rows = [];
 
     if (type === 'pesanan') {
@@ -398,6 +422,36 @@ export default function Laporan() {
                 className="input h-9 text-xs font-semibold"
                 title="Sampai tanggal"
               />
+            </div>
+            <div className="flex flex-wrap items-center gap-1 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setQuickRange('today')}
+                className="rounded-lg border border-line bg-surface/50 px-2 py-1 font-semibold text-ink-soft hover:bg-white hover:text-ink transition active:scale-95"
+              >
+                Hari Ini
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickRange('7days')}
+                className="rounded-lg border border-line bg-surface/50 px-2 py-1 font-semibold text-ink-soft hover:bg-white hover:text-ink transition active:scale-95"
+              >
+                7 Hari
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickRange('30days')}
+                className="rounded-lg border border-line bg-surface/50 px-2 py-1 font-semibold text-ink-soft hover:bg-white hover:text-ink transition active:scale-95"
+              >
+                30 Hari
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickRange('thisMonth')}
+                className="rounded-lg border border-line bg-surface/50 px-2 py-1 font-semibold text-ink-soft hover:bg-white hover:text-ink transition active:scale-95"
+              >
+                Bulan Ini
+              </button>
             </div>
             {hasFilter && (
               <Btn size="sm" variant="soft" icon={FilterX} onClick={resetFilter}>
@@ -1018,7 +1072,7 @@ function RepurchaseModal({ target, onClose, onSave }) {
     if (target) {
       setQty(String(target.quantity));
       setActualPrice('');
-      setDate(new Date().toISOString().split('T')[0]);
+      setDate(getLocalDateString());
       setNote('');
       setIsReceived(true);
       setError('');
@@ -1153,7 +1207,7 @@ function ReceiveRepurchaseModal({ target, onClose, onSave }) {
   useEffect(() => {
     if (target?.repurchase) {
       setReceivedQty(String(target.repurchase.quantity));
-      setDate(new Date().toISOString().split('T')[0]);
+      setDate(getLocalDateString());
       setNote('');
     }
   }, [target]);

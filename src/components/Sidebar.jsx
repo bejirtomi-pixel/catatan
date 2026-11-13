@@ -37,9 +37,11 @@ export default function Sidebar({ open, onClose }) {
             boxClassName="h-11 w-11 rounded-2xl bg-primary-soft text-xl shadow-soft"
             alt={settings.name || 'Logo warung'}
           />
-          <div className="min-w-0">
-            <p className="truncate text-sm font-extrabold text-ink">{settings.name || 'Warung Madura'}</p>
-            <p className="truncate text-[11px] font-medium text-ink-soft">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-extrabold text-ink leading-snug line-clamp-1 break-words" title={settings.name || 'Warung Madura'}>
+              {settings.name || 'Warung Madura'}
+            </p>
+            <p className="text-[11px] font-medium text-ink-soft leading-snug line-clamp-2 break-words" title={settings.description || 'Catatan Stok & Pesanan'}>
               {settings.description || 'Catatan Stok & Pesanan'}
             </p>
           </div>
@@ -78,16 +80,29 @@ export default function Sidebar({ open, onClose }) {
           ))}
         </nav>
 
-        <div className="border-t border-line p-4">
-          <div className="flex items-center gap-3 rounded-xl bg-primary-soft px-3 py-2.5">
+        <div className="border-t border-line p-3.5">
+          <div
+            className="flex items-start gap-3 rounded-2xl border border-line/60 bg-primary-soft/50 p-2.5 shadow-soft transition hover:border-primary/30"
+            title={`${settings.name || 'Warung Madura'}${settings.description ? ` • ${settings.description}` : ''}`}
+          >
             <Logo
               src={settings.logo}
-              boxClassName="h-9 w-9 rounded-xl bg-surface text-lg shadow-soft"
-              alt="Logo toko"
+              boxClassName="h-10 w-10 shrink-0 rounded-xl bg-surface text-lg shadow-soft mt-0.5"
+              alt={settings.name || 'Logo toko'}
             />
-            <div className="min-w-0">
-              <p className="truncate text-xs font-bold text-ink">{settings.name || 'Warung Madura'}</p>
-              <p className="truncate text-[11px] text-ink-soft">{settings.description || 'Catatan Stok & Pesanan'}</p>
+            <div className="min-w-0 flex-1">
+              <p
+                className="text-xs font-extrabold text-ink leading-tight break-words line-clamp-2"
+                title={settings.name || 'Warung Madura'}
+              >
+                {settings.name || 'Warung Madura'}
+              </p>
+              <p
+                className="mt-1 text-[11px] leading-snug text-ink-soft line-clamp-2 break-words"
+                title={settings.description || 'Catatan Stok & Pesanan'}
+              >
+                {settings.description || 'Catatan Stok & Pesanan'}
+              </p>
             </div>
           </div>
         </div>

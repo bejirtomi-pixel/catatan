@@ -11,13 +11,21 @@ import {
   X,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { formatDateTime, formatQty, rupiah, round2 } from '../utils/format';
+import { formatDateTime, formatQty, getLocalDateString, localDateToISO, rupiah, round2 } from '../utils/format';
 import { Btn, Field, Input, Modal, StatusPill, Textarea } from './UI';
 
 export default function OrderDetailModal({ order, onClose, initialReceiveOpen = false }) {
-  const { orders, storeById, receiveOrderPartial, cancelOrder, pushToast } = useApp();
+  const {
+    orders,
+    storeById,
+    receiveOrderPartial,
+    completeOrderWithShortages,
+    cancelOrder,
+    pushToast,
+  } = useApp();
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [closeShortageOpen, setCloseShortageOpen] = useState(false);
 
   // Sync dengan state pesanan terbaru di context
   const currentOrder = useMemo(() => {
@@ -115,6 +123,18 @@ export default function OrderDetailModal({ order, onClose, initialReceiveOpen = 
                   >
                     Batalkan Pesanan
                   </Btn>
+                  {currentOrder.status === 'sebagian' && (
+                    <Btn
+                      variant="soft"
+                      size="sm"
+                      className="!text-amber-800 !bg-amber-50 hover:!bg-amber-100 border border-amber-200"
+                      icon={ShieldAlert}
+                      onClick={() => setCloseShortageOpen(true)}
+                      title="Selesaikan pesanan dan catat sisa barang ke daftar kekurangan"
+                    >
+                      Tutup & Catat Kekurangan
+                    </Btn>
+                  )}
                   <Btn
                     size="sm"
                     icon={PackageCheck}
@@ -377,6 +397,28 @@ export default function OrderDetailModal({ order, onClose, initialReceiveOpen = 
           }
         }}
       />
+
+      {/* Modal Tutup Pesanan & Catat Kekurangan */}
+      <CloseShortageModal
+        open={closeShortageOpen}
+        order={currentOrder}
+        onClose={() => setCloseShortageOpen(false)}
+        onConfirm={({ reason, note }) => {
+          const res = completeOrderWithShortages(currentOrder.id, { reason, note });
+          if (res?.ok) {
+            pushToast(
+              `Pesanan ${currentOrder.id} diselesaikan. ${
+                res.shortagesCount > 0
+                  ? `${res.shortagesCount} barang kekurangan berhasil dicatat ke Laporan untuk dibeli kembali.`
+                  : 'Seluruh barang telah tercatat.'
+              }`
+            );
+            setCloseShortageOpen(false);
+          } else {
+            pushToast(res?.reason || 'Gagal menyelesaikan pesanan.', 'warning');
+          }
+        }}
+      />
     </>
   );
 }
@@ -414,10 +456,8 @@ function ReceiveModal({ open, order, onClose, onSave }) {
       setEntries(map);
       setGeneralNote('');
       setError('');
-      // Default tanggal hari ini (YYYY-MM-DD)
-      const now = new Date();
-      const localDate = now.toISOString().split('T')[0];
-      setReceivedDate(localDate);
+      // Default tanggal hari ini (YYYY-MM-DD lokal)
+      setReceivedDate(getLocalDateString());
     }
   }, [open, itemsWithRemaining]);
 
@@ -488,13 +528,7 @@ function ReceiveModal({ open, order, onClose, onSave }) {
       return;
     }
 
-    let customTimestamp = undefined;
-    if (receivedDate) {
-      const d = new Date(receivedDate);
-      if (!isNaN(d.getTime())) {
-        customTimestamp = d.toISOString();
-      }
-    }
+    const customTimestamp = receivedDate ? localDateToISO(receivedDate, 'now') : undefined;
 
     onSave({ items, note: generalNote, receivedAt: customTimestamp });
   };
@@ -679,6 +713,87 @@ function CancelModal({ open, order, onClose, onConfirm }) {
           placeholder="contoh: Toko kehabisan stok / ganti toko pemasok..."
         />
       </Field>
+    </Modal>
+  );
+}
+
+/* =========================================================================
+   Formulir Tutup Pesanan & Catat Kekurangan Barang
+   ========================================================================= */
+function CloseShortageModal({ open, order, onClose, onConfirm }) {
+  const [reason, setReason] = useState('Pemasok kehabisan stok barang');
+  const [note, setNote] = useState('');
+
+  useEffect(() => {
+    if (open) {
+      setReason('Pemasok kehabisan stok barang');
+      setNote('');
+    }
+  }, [open]);
+
+  if (!open || !order) return null;
+
+  const unfulfilled = (order.items || [])
+    .map((it) => ({
+      name: it.productNameSnapshot,
+      sisa: Math.max(0, Number(it.quantity || 0) - Number(it.receivedQuantity || 0)),
+      unit: it.unitName,
+    }))
+    .filter((it) => it.sisa > 0);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Tutup Pesanan & Catat Kekurangan"
+      subtitle="Selesaikan pesanan ini dan otomatis catat sisa barang yang belum dikirim ke daftar kekurangan untuk dibeli kembali."
+      size="md"
+      footer={
+        <div className="flex w-full items-center justify-end gap-2">
+          <Btn variant="soft" onClick={onClose}>
+            Batal
+          </Btn>
+          <Btn
+            variant="primary"
+            icon={CheckCircle2}
+            onClick={() => onConfirm({ reason, note })}
+          >
+            Selesaikan & Catat Kekurangan
+          </Btn>
+        </div>
+      }
+    >
+      <div className="space-y-3.5 text-xs">
+        <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-3.5 text-amber-900 leading-relaxed">
+          <p className="font-bold text-amber-950">
+            Daftar sisa barang yang akan dicatat sebagai kekurangan:
+          </p>
+          <ul className="mt-2 list-disc pl-4 space-y-1">
+            {unfulfilled.map((u, i) => (
+              <li key={i}>
+                <strong>{u.name}</strong>: {formatQty(u.sisa)} {u.unit} belum terkirim
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <Field label="Alasan Penutupan / Kekurangan">
+          <Input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="contoh: Pemasok kehabisan stok / barang kosong di agen..."
+          />
+        </Field>
+
+        <Field label="Catatan Tambahan (Opsional)">
+          <Textarea
+            rows={2}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Catatan tambahan untuk evaluasi pembelian ulang..."
+          />
+        </Field>
+      </div>
     </Modal>
   );
 }

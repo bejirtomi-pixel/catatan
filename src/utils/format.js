@@ -13,34 +13,73 @@ export const displayNum = (n) => {
   return Number.isInteger(num) ? String(num) : String(num);
 };
 
-export const formatDateTime = (iso) =>
-  new Date(iso).toLocaleString('id-ID', {
+export const formatDateTime = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('id-ID', {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
   });
+};
 
-export const formatDate = (iso) =>
-  new Date(iso).toLocaleDateString('id-ID', {
+export const formatDate = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('id-ID', {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
   });
+};
 
-export const dateCompact = (d) => {
-  const x = new Date(d);
+export const dateCompact = (d = new Date()) => {
+  const x = d instanceof Date ? d : new Date(d);
+  if (isNaN(x.getTime())) return '';
   return `${x.getFullYear()}${String(x.getMonth() + 1).padStart(2, '0')}${String(
     x.getDate()
   ).padStart(2, '0')}`;
 };
 
 export const dateKey = (d) => {
-  const x = new Date(d);
+  if (!d) return '';
+  const x = d instanceof Date ? d : new Date(d);
+  if (isNaN(x.getTime())) return '';
   return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(
     x.getDate()
   ).padStart(2, '0')}`;
+};
+
+// Mengambil tanggal lokal sistem (WIB/Indonesia) dalam format YYYY-MM-DD
+export const getLocalDateString = (d = new Date()) => {
+  const x = d instanceof Date ? d : new Date(d);
+  if (isNaN(x.getTime())) return '';
+  const year = x.getFullYear();
+  const month = String(x.getMonth() + 1).padStart(2, '0');
+  const day = String(x.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Mengonversi input YYYY-MM-DD menjadi ISO string yang tepat dengan waktu lokal
+export const localDateToISO = (dateStr, timeMode = 'now') => {
+  if (!dateStr) return new Date().toISOString();
+  const parts = String(dateStr).split('-').map(Number);
+  if (parts.length !== 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) {
+    return new Date().toISOString();
+  }
+  const [y, m, d] = parts;
+  const date = new Date();
+  date.setFullYear(y, m - 1, d);
+  if (timeMode === 'start') {
+    date.setHours(0, 0, 0, 0);
+  } else if (timeMode === 'end') {
+    date.setHours(23, 59, 59, 999);
+  }
+  return date.toISOString();
 };
 
 export const uid = (prefix = '') =>
