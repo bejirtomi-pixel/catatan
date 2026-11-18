@@ -1120,24 +1120,23 @@ function OrderTable({
         </div>
       ) : (
         <>
-          {/* Desktop Table View (Exact 9 Ordered Columns) */}
+          {/* Desktop Table View (Exact 8 Ordered Columns) */}
           <div className="hidden md:block">
-            <TableWrap minWidth="min-w-[880px]">
-              <thead className="border-b border-line bg-primary-soft/50 text-xs font-bold text-ink">
+            <TableWrap minWidth="w-full">
+              <thead className="border-b border-line bg-primary-soft/50 text-[11px] font-bold text-ink uppercase tracking-wider">
                 <tr>
-                  <TH className="w-10 text-center">No</TH>
-                  <TH className="w-14">Gambar</TH>
-                  <TH className="min-w-[190px] max-w-[280px]">Nama Barang</TH>
-                  <TH className="w-28">Kategori</TH>
-                  <TH className="w-40">Pilihan Satuan</TH>
-                  <TH className="w-36">Harga Beli</TH>
-                  <TH className="w-36 text-center">Jumlah Pesanan</TH>
-                  <TH className="w-28 text-right">Subtotal</TH>
-                  <TH className="w-28 text-right">Aksi</TH>
+                  <TH className="w-12 text-center py-2.5 px-2">Gambar</TH>
+                  <TH className="min-w-[150px] py-2.5 px-2">Nama Barang</TH>
+                  <TH className="w-20 text-center py-2.5 px-1.5">Kategori</TH>
+                  <TH className="w-24 text-center py-2.5 px-1.5">Pilihan Satuan</TH>
+                  <TH className="w-24 text-center py-2.5 px-1.5">Harga Beli</TH>
+                  <TH className="w-24 text-center py-2.5 px-1.5">Jumlah Pesanan</TH>
+                  <TH className="w-20 text-right py-2.5 px-1.5">Subtotal</TH>
+                  <TH className="w-24 text-right py-2.5 px-2">Aksi</TH>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {filtered.map((p, i) => {
+                {filtered.map((p) => {
                   const units = p.units || [];
                   const baseUnit = units[0] || { name: 'pcs', factor: 1 };
                   const unitId =
@@ -1148,22 +1147,19 @@ function OrderTable({
                   const priceVal =
                     prices[p.id] != null ? prices[p.id] : String(effectivePrice || '');
                   const unit = units.find((u) => u.id === unitId) || units[0] || { factor: 1, name: 'pcs' };
-                  const factor = Number(unit.factor) || 1;
-                  const hasConversion = factor > 1;
                   const subtotal = (Number(priceVal) || 0) * qty;
 
                   return (
                     <tr key={p.id} className="bg-white transition hover:bg-primary-soft/30">
-                      {/* 1. No */}
-                      <TD className="text-center text-ink-soft">{i + 1}</TD>
-
-                      {/* 2. Gambar */}
-                      <TD>
-                        <ProductImage product={p} size="sm" onClick={() => onPreview(p)} />
+                      {/* 1. Gambar */}
+                      <TD className="text-center py-2 px-2">
+                        <div className="flex justify-center">
+                          <ProductImage product={p} size="sm" onClick={() => onPreview(p)} />
+                        </div>
                       </TD>
 
-                      {/* 3. Nama Barang */}
-                      <TD className="min-w-[190px] max-w-[280px]">
+                      {/* 2. Nama Barang */}
+                      <TD className="min-w-[150px] py-2 px-2">
                         <button
                           type="button"
                           onClick={() => onPreview(p)}
@@ -1190,36 +1186,26 @@ function OrderTable({
                         </div>
                       </TD>
 
-                      {/* 4. Kategori */}
-                      <TD>
-                        <span className="inline-block rounded-md bg-primary-soft/80 px-2 py-0.5 text-xs font-semibold text-primary">
+                      {/* 3. Kategori */}
+                      <TD className="text-center py-2 px-1.5">
+                        <span className="inline-block max-w-[80px] truncate rounded-md bg-primary-soft/80 px-2 py-0.5 text-xs font-semibold text-primary" title={p.category || 'Umum'}>
                           {p.category || 'Umum'}
                         </span>
                       </TD>
 
-                      {/* 5. Pilihan Satuan */}
-                      <TD>
-                        <select
-                          value={unitId}
-                          onChange={(e) => setUnit(p, e.target.value)}
-                          className="h-8 w-full appearance-none rounded-lg border border-line bg-white px-2 pr-6 text-xs font-semibold text-ink outline-none focus:border-primary"
-                        >
-                          {units.map((u) => (
-                            <option key={u.id} value={u.id}>
-                              {u.name} {Number(u.factor) > 1 ? `(x${formatQty(u.factor)} ${baseUnit.name})` : ''}
-                            </option>
-                          ))}
-                        </select>
-                        {hasConversion && (
-                          <p className="mt-1 text-[10px] text-ink-soft">
-                            1 {unit.name} = {formatQty(factor)} {baseUnit.name}
-                          </p>
-                        )}
+                      {/* 4. Pilihan Satuan */}
+                      <TD className="py-2 px-1.5">
+                        <UnitSelectDropdown
+                          units={units}
+                          baseUnit={baseUnit}
+                          selectedUnitId={unitId}
+                          onChange={(uid) => setUnit(p, uid)}
+                        />
                       </TD>
 
-                      {/* 6. Harga Beli */}
-                      <TD>
-                        <div className="relative">
+                      {/* 5. Harga Beli */}
+                      <TD className="py-2 px-1.5">
+                        <div className="w-full min-w-[75px]">
                           <Input
                             type="number"
                             min="0"
@@ -1227,17 +1213,17 @@ function OrderTable({
                             onChange={(e) =>
                               setPrices((prev) => ({ ...prev, [p.id]: e.target.value }))
                             }
-                            className="!px-2.5 !py-1 text-xs !font-bold"
+                            className="!h-8 !px-2 !py-1 text-xs !font-bold text-right"
                             inputMode="numeric"
                           />
-                          <p className="mt-0.5 text-[10px] text-ink-soft truncate" title={`Acuan: ${rupiah(effectivePrice)} / ${unit.name}`}>
-                            acuan: {rupiah(effectivePrice)}
+                          <p className="mt-0.5 text-[10px] text-ink-soft text-right truncate" title={`Acuan: ${rupiah(effectivePrice)} / ${unit.name}`}>
+                            {rupiah(effectivePrice)}
                           </p>
                         </div>
                       </TD>
 
-                      {/* 7. Jumlah Pesanan */}
-                      <TD>
+                      {/* 6. Jumlah Pesanan */}
+                      <TD className="py-2 px-1.5">
                         <div className="flex flex-col items-center justify-center">
                           <div className="inline-flex items-center rounded-xl border border-line bg-white p-0.5 shadow-soft">
                             <button
@@ -1253,7 +1239,7 @@ function OrderTable({
                                 }))
                               }
                               disabled={qty <= 0}
-                              className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary-soft text-primary transition hover:bg-primary hover:text-white disabled:opacity-40"
+                              className="flex h-6 w-6 items-center justify-center rounded-lg bg-primary-soft text-primary transition hover:bg-primary hover:text-white disabled:opacity-40"
                             >
                               <Minus className="h-3 w-3" />
                             </button>
@@ -1271,7 +1257,7 @@ function OrderTable({
                                   },
                                 }))
                               }
-                              className="h-7 w-10 border-0 bg-transparent text-center text-xs font-bold text-ink outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                              className="h-6 w-7 border-0 bg-transparent text-center text-xs font-bold text-ink outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
                             />
                             <button
                               type="button"
@@ -1285,28 +1271,23 @@ function OrderTable({
                                   },
                                 }))
                               }
-                              className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-white transition hover:brightness-110"
+                              className="flex h-6 w-6 items-center justify-center rounded-lg bg-primary text-white transition hover:brightness-110"
                             >
                               <Plus className="h-3 w-3" />
                             </button>
                           </div>
-                          {hasConversion && qty > 0 && (
-                            <span className="mt-1 text-[10px] font-semibold text-primary">
-                              Total: {formatQty(qty * factor)} {baseUnit.name}
-                            </span>
-                          )}
                         </div>
                       </TD>
 
-                      {/* 8. Subtotal */}
-                      <TD className="text-right">
-                        <span className={`text-xs font-bold ${qty > 0 ? 'text-primary' : 'text-ink-soft'}`}>
+                      {/* 7. Subtotal */}
+                      <TD className="text-right py-2 px-1.5">
+                        <span className={`text-xs font-bold whitespace-nowrap ${qty > 0 ? 'text-primary' : 'text-ink-soft'}`}>
                           {rupiah(subtotal)}
                         </span>
                       </TD>
 
-                      {/* 9. Aksi */}
-                      <TD className="text-right">
+                      {/* 8. Aksi */}
+                      <TD className="text-right py-2 px-2">
                         <button
                           type="button"
                           disabled={qty <= 0}
@@ -1318,7 +1299,7 @@ function OrderTable({
                             }));
                           }}
                           title="Tambahkan barang ke keranjang pesanan"
-                          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-bold text-white transition hover:brightness-110 disabled:opacity-40"
+                          className="inline-flex h-8 items-center gap-1 rounded-lg bg-primary px-2.5 text-xs font-bold text-white transition hover:brightness-110 disabled:opacity-40 whitespace-nowrap"
                         >
                           <ShoppingCart className="h-3.5 w-3.5" />
                           <span>+ Keranjang</span>
@@ -1344,8 +1325,6 @@ function OrderTable({
               const priceVal =
                 prices[p.id] != null ? prices[p.id] : String(effectivePrice || '');
               const unit = units.find((u) => u.id === unitId) || units[0] || { factor: 1, name: 'pcs' };
-              const factor = Number(unit.factor) || 1;
-              const hasConversion = factor > 1;
               const subtotal = (Number(priceVal) || 0) * qty;
 
               return (
@@ -1388,22 +1367,15 @@ function OrderTable({
                       <label className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">
                         Satuan
                       </label>
-                      <select
-                        value={unitId}
-                        onChange={(e) => setUnit(p, e.target.value)}
-                        className="mt-0.5 h-7 w-full appearance-none rounded-lg border border-line bg-white px-2 text-xs font-semibold text-ink outline-none focus:border-primary"
-                      >
-                        {units.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name} {Number(u.factor) > 1 ? `(x${formatQty(u.factor)})` : ''}
-                          </option>
-                        ))}
-                      </select>
-                      {hasConversion && (
-                        <p className="mt-1 text-[10px] text-ink-soft">
-                          1 {unit.name} = {formatQty(factor)} {baseUnit.name}
-                        </p>
-                      )}
+                      <div className="mt-0.5">
+                        <UnitSelectDropdown
+                          units={units}
+                          baseUnit={baseUnit}
+                          selectedUnitId={unitId}
+                          onChange={(uid) => setUnit(p, uid)}
+                          className="!max-w-none"
+                        />
+                      </div>
                     </div>
 
                     <div>
