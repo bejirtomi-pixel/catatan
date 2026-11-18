@@ -1325,6 +1325,8 @@ function OrderTable({
               const priceVal =
                 prices[p.id] != null ? prices[p.id] : String(effectivePrice || '');
               const unit = units.find((u) => u.id === unitId) || units[0] || { factor: 1, name: 'pcs' };
+              const factor = Number(unit.factor) || 1;
+              const hasConversion = factor > 1;
               const subtotal = (Number(priceVal) || 0) * qty;
 
               return (
