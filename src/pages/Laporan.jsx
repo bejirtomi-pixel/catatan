@@ -875,6 +875,13 @@ export default function Laporan() {
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
                             <span className="h-1.5 w-1.5 rounded-full bg-current" /> Sudah Diterima
                           </span>
+                        ) : (Number(r.receivedQuantity) || 0) > 0 ? (
+                          <span
+                            className="inline-flex items-center gap-1.5 rounded-full bg-sky-100 px-2.5 py-1 text-[11px] font-bold text-sky-700"
+                            title={`Diterima ${formatQty(r.receivedQuantity)} dari ${formatQty(r.quantity)} ${r.unit}`}
+                          >
+                            <span className="h-1.5 w-1.5 rounded-full bg-current" /> Diterima Sebagian ({formatQty(r.receivedQuantity)}/{formatQty(r.quantity)})
+                          </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-bold text-amber-700">
                             <span className="h-1.5 w-1.5 rounded-full bg-current" /> Menunggu Kedatangan
@@ -892,7 +899,7 @@ export default function Laporan() {
                               icon={PackageCheck}
                               onClick={() => setReceiveTarget({ shortage: r.shortage, repurchase: r })}
                             >
-                              Catat Tiba
+                              {(Number(r.receivedQuantity) || 0) > 0 ? 'Terima Sisa' : 'Catat Tiba'}
                             </Btn>
                           )}
                         </div>
@@ -1203,25 +1210,43 @@ function ReceiveRepurchaseModal({ target, onClose, onSave }) {
   const [receivedQty, setReceivedQty] = useState('');
   const [date, setDate] = useState('');
   const [note, setNote] = useState('');
+  const [error, setError] = useState('');
+
+  const rep = target?.repurchase;
+  const alreadyRec = Number(rep?.receivedQuantity) || 0;
+  const totalQty = Number(rep?.quantity) || 0;
+  const sisa = round2(Math.max(0, totalQty - alreadyRec));
 
   useEffect(() => {
     if (target?.repurchase) {
-      setReceivedQty(String(target.repurchase.quantity));
+      setReceivedQty(String(sisa > 0 ? sisa : totalQty));
       setDate(getLocalDateString());
       setNote('');
+      setError('');
     }
-  }, [target]);
+  }, [target, sisa, totalQty]);
 
   if (!target || !target.repurchase) return null;
 
   const submit = () => {
+    setError('');
     const val = Number(receivedQty);
-    if (!(val > 0)) return;
+    if (isNaN(val) || val <= 0) {
+      setError('Jumlah barang yang diterima harus lebih dari 0.');
+      return;
+    }
+    if (val > round2(sisa + 1e-6)) {
+      setError(
+        `Jumlah diterima (${formatQty(val)} ${target.shortage.unit}) melebihi sisa pembelian ulang yang belum datang (${formatQty(sisa)} ${target.shortage.unit}).`
+      );
+      return;
+    }
+
     onSave({
       shortageId: target.shortage.id,
       repurchaseId: target.repurchase.id,
       receivedQuantity: val,
-      date: date ? new Date(date).toISOString() : new Date().toISOString(),
+      date: date ? localDateToISO(date, 'now') : new Date().toISOString(),
       note: note.trim(),
     });
   };
@@ -1231,7 +1256,7 @@ function ReceiveRepurchaseModal({ target, onClose, onSave }) {
       open={!!target}
       onClose={onClose}
       title="Catat Kedatangan Barang Pembelian Ulang"
-      subtitle="Barang yang telah tiba akan ditambahkan ke inventaris stok warung secara real-time."
+      subtitle="Barang yang telah tiba akan ditambahkan ke inventaris fisik stok warung secara real-time."
       size="sm"
       footer={
         <>
@@ -1244,20 +1269,61 @@ function ReceiveRepurchaseModal({ target, onClose, onSave }) {
         </>
       }
     >
-      <div className="rounded-xl border border-line bg-primary-soft/40 p-3 text-xs space-y-1">
-        <p className="font-bold text-ink">
-          {target.shortage.productNameSnapshot} ({target.shortage.unit})
-        </p>
-        <p className="text-ink-soft">
-          Pembelian ulang dicatat: <strong>{formatQty(target.repurchase.quantity)} {target.shortage.unit}</strong>
-        </p>
+      <div className="rounded-xl border border-line bg-primary-soft/40 p-3 text-xs space-y-2">
+        <div>
+          <p className="font-bold text-ink">
+            {target.shortage.productNameSnapshot} ({target.shortage.unit})
+          </p>
+          <p className="text-[11px] text-ink-soft">
+            Pesanan asal: <strong className="text-primary">{target.shortage.orderId || '—'}</strong>
+          </p>
+        </div>
+
+        {/* Ringkasan status pembelian ulang bertahap */}
+        <div className="grid grid-cols-3 gap-1.5 rounded-lg border border-line/60 bg-white p-2 text-center text-[11px]">
+          <div>
+            <span className="text-[10px] text-ink-soft">Total Beli</span>
+            <p className="font-extrabold text-ink">{formatQty(totalQty)} {target.shortage.unit}</p>
+          </div>
+          <div>
+            <span className="text-[10px] text-emerald-700">Sudah Diterima</span>
+            <p className="font-extrabold text-emerald-600">{formatQty(alreadyRec)} {target.shortage.unit}</p>
+          </div>
+          <div>
+            <span className="text-[10px] text-amber-700">Sisa Belum Tiba</span>
+            <p className="font-extrabold text-amber-600">{formatQty(sisa)} {target.shortage.unit}</p>
+          </div>
+        </div>
+
+        {/* Riwayat tahapan sebelumnya jika sudah ada penerimaan bertahap */}
+        {rep.receipts && rep.receipts.length > 0 && (
+          <div className="space-y-1 pt-1">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">
+              Tahapan Kedatangan Sebelumnya:
+            </p>
+            <div className="max-h-24 space-y-1 overflow-y-auto">
+              {rep.receipts.map((rc, idx) => (
+                <div
+                  key={rc.id || idx}
+                  className="flex items-center justify-between rounded border border-line bg-white px-2 py-1 text-[10px] text-ink-soft"
+                >
+                  <span className="font-semibold text-emerald-700">
+                    Tahap #{idx + 1}: +{formatQty(rc.receivedQuantity)} {target.shortage.unit}
+                  </span>
+                  <span>{formatDateTime(rc.date)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="mt-3.5 space-y-3">
         <Field label={`Jumlah Barang yang Tiba (${target.shortage.unit})`} required>
           <Input
             type="number"
-            min="0.1"
+            min="0.01"
+            max={sisa}
             step="any"
             value={receivedQty}
             onChange={(e) => setReceivedQty(e.target.value)}
@@ -1281,6 +1347,12 @@ function ReceiveRepurchaseModal({ target, onClose, onSave }) {
           />
         </Field>
       </div>
+
+      {error && (
+        <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-600">
+          {error}
+        </p>
+      )}
     </Modal>
   );
 }
@@ -1366,10 +1438,20 @@ function ShortageDetailModal({ shortage, onClose }) {
               <div key={r.id || i} className="rounded-xl border border-line bg-white p-3 shadow-soft text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-1 border-b border-line/60 pb-1.5">
                   <span className="font-bold text-ink">Pembelian #{i + 1} — {formatDateTime(r.date)}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                    r.isReceived ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                  }`}>
-                    {r.isReceived ? 'Sudah Tiba & Masuk Stok' : 'Menunggu Kedatangan'}
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                      r.isReceived
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : (Number(r.receivedQuantity) || 0) > 0
+                        ? 'bg-sky-100 text-sky-700'
+                        : 'bg-amber-100 text-amber-700'
+                    }`}
+                  >
+                    {r.isReceived
+                      ? 'Sudah Tiba & Masuk Stok'
+                      : (Number(r.receivedQuantity) || 0) > 0
+                      ? `Diterima Sebagian (${formatQty(r.receivedQuantity)}/${formatQty(r.quantity)})`
+                      : 'Menunggu Kedatangan'}
                   </span>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-ink-soft">
@@ -1378,6 +1460,27 @@ function ShortageDetailModal({ shortage, onClose }) {
                   {r.actualPrice > 0 && <span>Harga: <strong className="text-ink">{rupiah(r.actualPrice)}</strong></span>}
                 </div>
                 {r.note && <p className="mt-1 text-[11px] italic text-ink-soft">“{r.note}”</p>}
+
+                {/* Tampilkan tahapan penerimaan bertahap jika ada */}
+                {r.receipts && r.receipts.length > 0 && (
+                  <div className="mt-2 border-t border-line/40 pt-1.5 space-y-1">
+                    <p className="text-[10px] font-bold text-ink-soft">Tahapan Penerimaan:</p>
+                    <div className="space-y-1">
+                      {r.receipts.map((rc, idx) => (
+                        <div
+                          key={rc.id || idx}
+                          className="flex items-center justify-between rounded bg-primary-soft/30 px-2 py-0.5 text-[10px] text-ink-soft"
+                        >
+                          <span className="font-medium text-emerald-700">
+                            Tahap #{idx + 1}: +{formatQty(rc.receivedQuantity)} {shortage.unit}
+                            {rc.note ? ` (${rc.note})` : ''}
+                          </span>
+                          <span>{formatDateTime(rc.date)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

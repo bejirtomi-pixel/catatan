@@ -2426,7 +2426,8 @@ function StoreFormModal({
    7. ManagePriceModal: Pengaturan Harga Acuan Beli Pemasok
    ========================================================================= */
 function ManagePriceModal({ open, initialStoreId = '', onClose }) {
-  const { stores, products, priceOfStore, saveStorePrices, priceHistory, pushToast } = useApp();
+  const { stores, products, priceOfStore, saveStorePrices, resetStorePrice, storePrices, priceHistory, pushToast } =
+    useApp();
   const [storeId, setStoreId] = useState(initialStoreId || stores[0]?.id || '');
   const [rows, setRows] = useState({});
   const [error, setError] = useState('');
@@ -2460,9 +2461,12 @@ function ManagePriceModal({ open, initialStoreId = '', onClose }) {
           unitName: u.name,
           unitFactor: Number(u.factor) || 1,
           oldPrice: priceOfStore(storeId, p.id, u.id),
+          hasCustom: storePrices.some(
+            (sp) => sp.storeId === storeId && sp.productId === p.id && sp.unitId === u.id
+          ),
         }))
       );
-  }, [storeId, products, priceOfStore]);
+  }, [storeId, products, priceOfStore, storePrices]);
 
   const selected = lines.filter((l) => rows[l.key]?.checked);
 
@@ -2473,6 +2477,11 @@ function ManagePriceModal({ open, initialStoreId = '', onClose }) {
 
   const update = (key, patch) =>
     setRows((prev) => ({ ...prev, [key]: { ...(prev[key] || { checked: false, newPrice: '' }), ...patch } }));
+
+  const handleResetSingle = (l) => {
+    resetStorePrice(storeId, l.productId, l.unitId);
+    pushToast(`Harga acuan “${l.product.name} (${l.unitName})” dikembalikan ke harga master warung`);
+  };
 
   const save = () => {
     const entries = [];
@@ -2564,10 +2573,27 @@ function ManagePriceModal({ open, initialStoreId = '', onClose }) {
                         <span className="ml-1">· 1 = {formatQty(l.unitFactor)} satuan dasar</span>
                       )}
                     </p>
-                    <div className="mt-1.5 flex flex-wrap items-end gap-3">
-                      <p className="text-xs text-ink-soft">
-                        Harga acuan saat ini: <span className="font-bold text-ink">{rupiah(l.oldPrice)}</span>
-                      </p>
+                    <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <p className="text-xs text-ink-soft">
+                          Harga acuan saat ini: <span className="font-bold text-ink">{rupiah(l.oldPrice)}</span>
+                        </p>
+                        {l.hasCustom && (
+                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                            Harga Khusus
+                          </span>
+                        )}
+                        {l.hasCustom && (
+                          <button
+                            type="button"
+                            onClick={() => handleResetSingle(l)}
+                            className="text-[11px] font-bold text-rose-600 hover:text-rose-700 hover:underline"
+                            title="Hapus harga khusus toko ini dan gunakan kembali harga master barang"
+                          >
+                            Reset ke Master
+                          </button>
+                        )}
+                      </div>
                       <div className="w-36">
                         <Input
                           type="number"

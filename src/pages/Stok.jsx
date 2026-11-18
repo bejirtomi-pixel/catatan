@@ -1392,6 +1392,8 @@ function PenyesuaianModal({ open, onClose, preset, initialMode = 'tambah' }) {
     if (mode === 'tambah' || mode === 'kurang') {
       if (quantity === '' || !(Number(quantity) > 0)) {
         errs.quantity = `Jumlah ${mode === 'tambah' ? 'masuk' : 'keluar'} wajib lebih dari 0.`;
+      } else if (mode === 'kurang' && baseQty > before) {
+        errs.quantity = `Pengurangan (${formatQty(baseQty)} ${baseName}) melebihi stok fisik tersedia (${formatQty(before)} ${baseName}).`;
       }
     } else if (mode === 'sesuaikan') {
       if (quantity === '' || !(Number(quantity) >= 0)) {
@@ -1411,13 +1413,25 @@ function PenyesuaianModal({ open, onClose, preset, initialMode = 'tambah' }) {
     if (Object.keys(errs).length) return;
 
     if (mode === 'tambah') {
-      addBarangMasuk({ productId, unitId: unit.id, quantity: Number(quantity), note: note.trim() });
+      const res = addBarangMasuk({ productId, unitId: unit.id, quantity: Number(quantity), note: note.trim() });
+      if (res?.ok === false) {
+        pushToast(res.reason || 'Gagal mencatat barang masuk', 'warning');
+        return;
+      }
       pushToast('Barang masuk tercatat — stok bertambah');
     } else if (mode === 'kurang') {
-      addBarangKeluar({ productId, unitId: unit.id, quantity: Number(quantity), note: note.trim() });
+      const res = addBarangKeluar({ productId, unitId: unit.id, quantity: Number(quantity), note: note.trim() });
+      if (res?.ok === false) {
+        pushToast(res.reason || 'Gagal mencatat barang keluar', 'warning');
+        return;
+      }
       pushToast('Barang keluar tercatat — stok berkurang');
     } else if (mode === 'sesuaikan') {
-      adjustStock({ productId, unitId: unit.id, quantity: Number(quantity), note: reason.trim() });
+      const res = adjustStock({ productId, unitId: unit.id, quantity: Number(quantity), note: reason.trim() });
+      if (res?.ok === false) {
+        pushToast(res.reason || 'Gagal menyesuaikan stok', 'warning');
+        return;
+      }
       pushToast('Stok disesuaikan — riwayat tersimpan');
     } else {
       updateStockPrices(

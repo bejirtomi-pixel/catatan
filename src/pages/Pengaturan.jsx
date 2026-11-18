@@ -9,6 +9,9 @@ import {
   Check,
   CheckCircle2,
   ClipboardList,
+  Cloud,
+  CloudDownload,
+  CloudUpload,
   Database,
   Download,
   FileSpreadsheet,
@@ -34,6 +37,7 @@ import { dateCompact, formatDateTime, formatQty } from '../utils/format';
 import { compressImage } from '../utils/image';
 import { Btn, ConfirmModal, Field, Input, Modal, PageHeader, Textarea, cx } from '../components/UI';
 import Logo from '../components/Logo';
+import { saveBackupToCloud, fetchBackupFromCloud } from '../services/firebase';
 
 // 6 Tema Warna Resmi Warung Madura
 const THEMES = [
@@ -131,6 +135,7 @@ export default function Pengaturan() {
   const [pendingImport, setPendingImport] = useState(null);
   const [restoreModalOpen, setRestoreModalOpen] = useState(false);
   const [importError, setImportError] = useState('');
+  const [cloudBusy, setCloudBusy] = useState(false);
   const restoreFileRef = useRef(null);
 
   // 5. State Reset Data
@@ -263,6 +268,48 @@ export default function Pengaturan() {
       );
     } catch {
       pushToast('Gagal membuat berkas cadangan.', 'error');
+    }
+  };
+
+  const handleSaveToCloud = async () => {
+    setCloudBusy(true);
+    try {
+      const backup = buildBackup();
+      const res = await saveBackupToCloud(backup);
+      if (res.ok) {
+        const now = new Date().toISOString();
+        updateSettings({ lastCloudBackupAt: now });
+        pushToast('Cadangan data berhasil disimpan ke Firebase Cloud!');
+      } else {
+        pushToast(res.reason || 'Gagal menyimpan ke Firebase Cloud.', 'error');
+      }
+    } catch (err) {
+      pushToast(err.message || 'Terjadi kesalahan saat menyimpan ke cloud.', 'error');
+    } finally {
+      setCloudBusy(false);
+    }
+  };
+
+  const handleFetchFromCloud = async () => {
+    setCloudBusy(true);
+    setImportError('');
+    try {
+      const res = await fetchBackupFromCloud();
+      if (!res.ok) {
+        pushToast(res.reason || 'Gagal mengambil data dari Firebase Cloud.', 'warning');
+        return;
+      }
+      const validation = validateBackup(res.data);
+      if (!validation.valid) {
+        pushToast(validation.reason || 'Data cadangan di cloud tidak valid.', 'error');
+        return;
+      }
+      setPendingImport({ payload: res.data, validation, isFromCloud: true });
+      setRestoreModalOpen(true);
+    } catch (err) {
+      pushToast(err.message || 'Gagal memulihkan dari cloud.', 'error');
+    } finally {
+      setCloudBusy(false);
     }
   };
 
@@ -786,8 +833,8 @@ export default function Pengaturan() {
           </div>
         </div>
 
-        {/* 2 Kartu Aksi: Unduh Cadangan vs Pulihkan */}
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
+        {/* 3 Kartu Aksi: Unduh Cadangan, Pulihkan, dan Firebase Cloud */}
+        <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {/* Unduh Cadangan */}
           <div className="rounded-2xl border border-line bg-white p-4 shadow-soft flex flex-col justify-between">
             <div>
@@ -835,6 +882,45 @@ export default function Pengaturan() {
                 onClick={() => restoreFileRef.current?.click()}
               >
                 Pilih Berkas Cadangan (.json)
+              </Btn>
+            </div>
+          </div>
+
+          {/* Cadangan Firebase Cloud */}
+          <div className="rounded-2xl border border-line bg-white p-4 shadow-soft flex flex-col justify-between">
+            <div>
+              <div className="flex items-center gap-2 text-ink">
+                <Cloud className="h-4 w-4 text-amber-500" />
+                <h3 className="text-xs font-extrabold sm:text-sm">Cadangan Firebase Cloud</h3>
+              </div>
+              <p className="mt-1 text-xs text-ink-soft leading-relaxed">
+                Simpan snapshot cadangan terenkapsulasi ke Firestore cloud (Proyek: <strong className="text-ink">catatan-b7384</strong>).
+              </p>
+              {settings.lastCloudBackupAt && (
+                <p className="mt-2 text-[11px] font-semibold text-emerald-600">
+                  Tersimpan di cloud: {formatDateTime(settings.lastCloudBackupAt)}
+                </p>
+              )}
+            </div>
+
+            <div className="mt-4 pt-2 border-t border-line/60 flex flex-wrap gap-2">
+              <Btn
+                icon={CloudUpload}
+                variant="primary"
+                size="sm"
+                disabled={cloudBusy}
+                onClick={handleSaveToCloud}
+              >
+                {cloudBusy ? 'Menyimpan...' : 'Simpan ke Cloud'}
+              </Btn>
+              <Btn
+                icon={CloudDownload}
+                variant="outline"
+                size="sm"
+                disabled={cloudBusy}
+                onClick={handleFetchFromCloud}
+              >
+                Pulihkan
               </Btn>
             </div>
           </div>

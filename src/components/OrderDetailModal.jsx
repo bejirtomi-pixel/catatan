@@ -47,7 +47,9 @@ export default function OrderDetailModal({ order, onClose, initialReceiveOpen = 
   const canReceiveOrCancel =
     currentOrder.status === 'belum_diterima' ||
     currentOrder.status === 'sebagian' ||
-    currentOrder.status === 'active';
+    currentOrder.status === 'active' ||
+    currentOrder.status === 'menunggu' ||
+    currentOrder.status === 'pending';
 
   const handleDownloadTxt = () => {
     const storeName = storeById(currentOrder.storeId)?.name || '—';
@@ -408,8 +410,8 @@ export default function OrderDetailModal({ order, onClose, initialReceiveOpen = 
           if (res?.ok) {
             pushToast(
               `Pesanan ${currentOrder.id} diselesaikan. ${
-                res.shortagesCount > 0
-                  ? `${res.shortagesCount} barang kekurangan berhasil dicatat ke Laporan untuk dibeli kembali.`
+                (res.shortagesCount ?? res.shortagesCreated ?? 0) > 0
+                  ? `${res.shortagesCount ?? res.shortagesCreated} barang kekurangan berhasil dicatat ke Laporan untuk dibeli kembali.`
                   : 'Seluruh barang telah tercatat.'
               }`
             );

@@ -279,7 +279,7 @@ const migrateShortage = (s) => {
   if (!s || typeof s !== 'object') return null;
   const initialQuantity =
     s.initialQuantity != null ? Number(s.initialQuantity) : Number(s.quantity) || 0;
-  const repurchases = Array.isArray(s.repurchases)
+  const rawRepurchases = Array.isArray(s.repurchases)
     ? s.repurchases
     : s.status === 'sudah' && s.statusChangedAt
     ? [
@@ -302,8 +302,40 @@ const migrateShortage = (s) => {
       ]
     : [];
 
+  // Migrasi setiap item pembelian ulang agar mendukung multi-tahap penerimaan (staged repurchases)
+  const repurchases = rawRepurchases
+    .map((r) => {
+      if (!r || typeof r !== 'object') return null;
+      const targetQty = Number(r.quantity) || 0;
+      let receipts = Array.isArray(r.receipts) ? r.receipts : [];
+      if (receipts.length === 0 && (r.isReceived || Number(r.receivedQuantity) > 0)) {
+        receipts = [
+          {
+            id: uid('rpr-'),
+            receivedQuantity: Number(r.receivedQuantity) || targetQty,
+            date: r.receivedAt || r.date || r.createdAt || new Date().toISOString(),
+            note: r.receiveNote || r.note || '',
+          },
+        ];
+      }
+      const sumRec = round2(
+        receipts.reduce((acc, rc) => acc + (Number(rc.receivedQuantity) || 0), 0)
+      );
+      const recQty = receipts.length > 0 ? sumRec : Number(r.receivedQuantity) || 0;
+      const isComplete = targetQty > 0 && recQty >= targetQty;
+      const repStatus = isComplete ? 'selesai' : recQty > 0 ? 'sebagian' : 'menunggu';
+      return {
+        ...r,
+        receipts,
+        receivedQuantity: recQty,
+        isReceived: isComplete,
+        status: repStatus,
+      };
+    })
+    .filter(Boolean);
+
   const totalRec = round2(
-    repurchases.reduce((acc, r) => acc + (r.isReceived ? Number(r.receivedQuantity) || 0 : 0), 0)
+    repurchases.reduce((acc, r) => acc + (Number(r.receivedQuantity) || 0), 0)
   );
   const remainingQty = round2(Math.max(0, initialQuantity - totalRec));
 
@@ -454,6 +486,7 @@ export function AppProvider({ children }) {
 
     const historyAdds = [];
     for (const e of entries || []) {
+      if (e.reset) continue;
       const price = round2(Number(e.price) || 0);
       if (!(price > 0)) continue;
       const oldPrice = round2(currentPrice(e.productId, e.unitId));
@@ -475,20 +508,28 @@ export function AppProvider({ children }) {
     }
 
     setStorePrices((prev) => {
-      const rest = prev.filter((x) => x.storeId !== storeId);
-      const next = rest.slice();
-      for (const e of entries) {
+      // PERBAIKAN 2.1: Upsert murni tanpa menghapus harga barang lain pada toko ini
+      const next = prev.map((item) => ({ ...item }));
+      for (const e of entries || []) {
+        if (e.reset || Number(e.price) <= 0) {
+          // Hapus harga khusus untuk barang ini (kembali ke harga master)
+          const idx = next.findIndex(
+            (x) => x.storeId === storeId && x.productId === e.productId && x.unitId === e.unitId
+          );
+          if (idx >= 0) {
+            next.splice(idx, 1);
+          }
+          continue;
+        }
+
         const price = round2(Number(e.price) || 0);
         if (!(price > 0)) continue;
         const found = next.find(
           (x) => x.storeId === storeId && x.productId === e.productId && x.unitId === e.unitId
         );
         if (found) {
-          next[next.indexOf(found)] = {
-            ...found,
-            price,
-            updatedAt: now,
-          };
+          found.price = price;
+          found.updatedAt = now;
         } else {
           next.push({
             id: uid('sp-'),
@@ -507,6 +548,14 @@ export function AppProvider({ children }) {
       setPriceHistory((prev) => [...historyAdds, ...prev].slice(0, 500));
     }
   }, [stores, products, storePrices]);
+
+  const resetStorePrice = useCallback((storeId, productId, unitId) => {
+    setStorePrices((prev) =>
+      prev.filter(
+        (x) => !(x.storeId === storeId && x.productId === productId && x.unitId === unitId)
+      )
+    );
+  }, []);
 
   const upsertStock = useCallback((prev, data, mode = 'set') => {
     const idx = prev.findIndex((s) => s.productId === data.productId);
@@ -1069,16 +1118,36 @@ export function AppProvider({ children }) {
         return { ok: false, reason: 'Pesanan sudah dibatalkan sebelumnya.' };
       }
 
+      const hasReceivedAny = (target.items || []).some((it) => (Number(it.receivedQuantity) || 0) > 0);
+      const allReceived =
+        (target.items || []).length > 0 &&
+        (target.items || []).every((it) => (Number(it.receivedQuantity) || 0) >= Number(it.quantity || 0));
+      if (allReceived) {
+        return { ok: false, reason: 'Seluruh barang pada pesanan ini sudah diterima.' };
+      }
+
       const trimmedReason = String(reason || '').trim() || 'Dibatalkan oleh pengguna';
       const cancelTime = new Date().toISOString();
+
+      // Tandai sisa barang yang belum terkirim sebagai dibatalkan, pertahankan yang sudah diterima
+      const nextItems = (target.items || []).map((it) => {
+        const rec = Number(it.receivedQuantity) || 0;
+        const remaining = round2(Math.max(0, Number(it.quantity || 0) - rec));
+        return {
+          ...it,
+          cancelledRemaining: remaining,
+        };
+      });
 
       setOrders((prev) =>
         prev.map((o) =>
           o.id === orderId
             ? {
                 ...o,
+                items: nextItems,
                 status: 'batal',
                 cancelReason: trimmedReason,
+                cancelledAt: cancelTime,
                 updatedAt: cancelTime,
               }
             : o
@@ -1088,11 +1157,13 @@ export function AppProvider({ children }) {
       const storeName = storeById(target.storeId)?.name || 'toko pemasok';
       addActivityLog({
         title: 'Pesanan Dibatalkan',
-        desc: `Pesanan ${orderId} (${storeName}) dibatalkan: ${trimmedReason}. Stok barang yang telah diterima tetap tersimpan aman.`,
+        desc: hasReceivedAny
+          ? `Pesanan ${orderId} (${storeName}) dibatalkan untuk sisa barang yang belum dikirim: ${trimmedReason}. Stok barang yang telah diterima tetap tersimpan aman di inventaris.`
+          : `Pesanan ${orderId} (${storeName}) dibatalkan: ${trimmedReason}. Tidak ada perubahan stok warung.`,
         type: 'order_cancel',
       });
 
-      return { ok: true };
+      return { ok: true, hasPartialReceipts: hasReceivedAny };
     },
     [orders, storeById, addActivityLog]
   );
@@ -1143,8 +1214,29 @@ export function AppProvider({ children }) {
         }
       }
 
+      // Cegah duplikasi data kekurangan jika fungsi dipanggil ulang untuk pesanan yang sama
       if (newShortages.length > 0) {
-        setShortages((prev) => [...newShortages, ...prev]);
+        setShortages((prev) => {
+          let updated = [...prev];
+          for (const ns of newShortages) {
+            const existingIdx = updated.findIndex(
+              (s) => s.orderId === ns.orderId && s.productId === ns.productId && s.status !== 'terpenuhi'
+            );
+            if (existingIdx >= 0) {
+              const ex = updated[existingIdx];
+              updated[existingIdx] = {
+                ...ex,
+                quantity: ns.quantity,
+                initialQuantity: ns.initialQuantity,
+                statusNote: ns.statusNote,
+                updatedAt: now,
+              };
+            } else {
+              updated.unshift(ns);
+            }
+          }
+          return updated;
+        });
       }
 
       setOrders((prev) =>
@@ -1174,6 +1266,7 @@ export function AppProvider({ children }) {
         ok: true,
         orderId,
         shortagesCreated: newShortages.length,
+        shortagesCount: newShortages.length,
       };
     },
     [orders, storeById, addActivityLog]
@@ -1192,23 +1285,61 @@ export function AppProvider({ children }) {
 
   /* ---------- Stok ---------- */
   const applyMovement = useCallback((type, data) => {
+    if (!data || !data.productId) {
+      return { ok: false, reason: 'ID barang wajib disertakan.' };
+    }
     const product = products.find((p) => p.id === data.productId);
-    if (!product) return null;
+    if (!product) {
+      return { ok: false, reason: 'Barang tidak ditemukan dalam inventaris warung.' };
+    }
     const unit = (product.units || []).find((x) => x.id === data.unitId) || product.units[0];
-    const rawQty = Number(data.quantity) || 0;
+    const rawQty = Number(data.quantity);
+    if (isNaN(rawQty)) {
+      return { ok: false, reason: 'Jumlah kuantitas harus berupa angka valid.' };
+    }
+
     const factor = Number(unit ? unit.factor : 1) || 1;
-    const baseAmount = round2(Math.abs(rawQty) * factor);
     const stock = stocks.find((s) => s.productId === data.productId);
-    const beforeBase = stock ? stock.quantity : 0;
+    const beforeBase = stock ? Number(stock.quantity) || 0 : 0;
 
     let afterBase = beforeBase;
-    if (type === 'adjust') {
-      afterBase = round2(rawQty * factor);
-    } else if (type === 'keluar') {
-      afterBase = Math.max(0, round2(beforeBase - baseAmount));
-    } else {
+    const noteTrimmed = String(data.note || '').trim();
+
+    if (type === 'masuk') {
+      if (rawQty <= 0) {
+        return { ok: false, reason: 'Jumlah penambahan barang masuk harus lebih dari 0.' };
+      }
+      const baseAmount = round2(rawQty * factor);
       afterBase = round2(beforeBase + baseAmount);
+    } else if (type === 'keluar') {
+      if (rawQty <= 0) {
+        return { ok: false, reason: 'Jumlah pengurangan barang keluar harus lebih dari 0.' };
+      }
+      const baseAmount = round2(rawQty * factor);
+      if (baseAmount > beforeBase) {
+        return {
+          ok: false,
+          reason: `Pengurangan stok (${formatQty(rawQty)} ${unit?.name || 'satuan'} = ${formatQty(baseAmount)} ${baseNameOf(product)}) melebihi stok yang tersedia (${formatQty(beforeBase)} ${baseNameOf(product)}). Pengurangan ditolak demi menjaga keakuratan fisik stok.`,
+        };
+      }
+      afterBase = round2(beforeBase - baseAmount);
+    } else if (type === 'adjust') {
+      if (rawQty < 0) {
+        return { ok: false, reason: 'Jumlah penyesuaian fisik stok tidak boleh bernilai negatif.' };
+      }
+      if (!noteTrimmed) {
+        return { ok: false, reason: 'Alasan penyesuaian fisik stok wajib diisi.' };
+      }
+      afterBase = round2(rawQty * factor);
+      if (round2(afterBase) === round2(beforeBase)) {
+        return { ok: false, reason: 'Jumlah penyesuaian fisik sama dengan stok tercatat saat ini. Tidak ada perubahan stok.' };
+      }
+    } else {
+      return { ok: false, reason: `Tipe mutasi “${type}” tidak dikenal.` };
     }
+
+    const diffBase = round2(afterBase - beforeBase);
+    const now = data.timestamp || new Date().toISOString();
 
     setStocks((prev) =>
       upsertStock(prev, {
@@ -1227,34 +1358,37 @@ export function AppProvider({ children }) {
       unitBaseName: baseNameOf(product),
       beforeBase,
       afterBase,
-      diffBase: round2(afterBase - beforeBase),
+      diffBase,
       ref: data.ref || '',
-      note: data.note || '',
-      timestamp: new Date().toISOString(),
+      note: noteTrimmed,
+      timestamp: now,
     };
     setMovements((prev) => [movement, ...prev]);
 
     if (type === 'masuk') {
       addActivityLog({
         title: 'Stok Barang Bertambah',
-        desc: `${product.name}: +${formatQty(movement.diffBase)} ${movement.unitBaseName}${movement.note ? ` (${movement.note})` : ''}`,
+        desc: `${product.name}: +${formatQty(diffBase)} ${movement.unitBaseName}${noteTrimmed ? ` (${noteTrimmed})` : ''}`,
         type: 'stock_in',
+        timestamp: now,
       });
     } else if (type === 'keluar') {
       addActivityLog({
         title: 'Stok Barang Berkurang',
-        desc: `${product.name}: ${formatQty(movement.diffBase)} ${movement.unitBaseName}${movement.note ? ` (${movement.note})` : ''}`,
+        desc: `${product.name}: ${formatQty(diffBase)} ${movement.unitBaseName}${noteTrimmed ? ` (${noteTrimmed})` : ''}`,
         type: 'stock_out',
+        timestamp: now,
       });
     } else if (type === 'adjust') {
       addActivityLog({
         title: 'Penyesuaian Stok Dilakukan',
-        desc: `${product.name}: ${formatQty(beforeBase)} → ${formatQty(afterBase)} ${movement.unitBaseName}${movement.note ? ` (${movement.note})` : ''}`,
+        desc: `${product.name}: ${formatQty(beforeBase)} → ${formatQty(afterBase)} ${movement.unitBaseName}${noteTrimmed ? ` (${noteTrimmed})` : ''}`,
         type: 'stock_adjust',
+        timestamp: now,
       });
     }
 
-    return movement;
+    return { ok: true, movement, stockQuantity: afterBase };
   }, [products, stocks, upsertStock, baseNameOf, addActivityLog]);
 
   const addBarangMasuk = useCallback((data) => applyMovement('masuk', data), [applyMovement]);
@@ -1270,12 +1404,28 @@ export function AppProvider({ children }) {
       const qtyNum = round2(Number(quantity) || 0);
       if (qtyNum <= 0) return { ok: false, reason: 'Jumlah pembelian harus lebih dari 0.' };
 
-      const now = date ? new Date(date).toISOString() : new Date().toISOString();
+      const now = date
+        ? (date.includes('T') ? date : localDateToISO(date))
+        : new Date().toISOString();
       const priceNum = round2(Number(actualPrice) || 0);
-      const receivedQty = isReceived ? qtyNum : 0;
+      const isRec = Boolean(isReceived);
+      const receivedQty = isRec ? qtyNum : 0;
+
+      // Inisialisasi tahapan penerimaan (receipts) untuk mendukung penerimaan bertahap
+      const initialReceipts =
+        isRec && receivedQty > 0
+          ? [
+              {
+                id: uid('rpr-'),
+                receivedQuantity: receivedQty,
+                date: now,
+                note: note ? String(note).trim() : '',
+              },
+            ]
+          : [];
 
       // Jika langsung diterima, masukkan ke stok warung dan catat mutasi penerimaan
-      if (isReceived && receivedQty > 0) {
+      if (isRec && receivedQty > 0) {
         const factor = Number(target.factor) || 1;
         const baseQty = round2(receivedQty * factor);
         const product = products.find((p) => p.id === target.productId);
@@ -1313,7 +1463,7 @@ export function AppProvider({ children }) {
         setMovements((prev) => [movement, ...prev]);
 
         addActivityLog({
-          title: 'Pembelian Ulang Diterima',
+          title: 'Pembelian Ulang Selesai Diterima',
           desc: `${formatQty(receivedQty)} ${target.unit} “${target.productNameSnapshot}” telah tiba & masuk stok`,
           type: 'repurchase_received',
         });
@@ -1336,8 +1486,10 @@ export function AppProvider({ children }) {
         date: now,
         quantity: qtyNum,
         receivedQuantity: receivedQty,
+        receipts: initialReceipts,
         actualPrice: priceNum,
-        isReceived: Boolean(isReceived),
+        isReceived: isRec,
+        status: isRec ? 'selesai' : 'menunggu',
         note: note ? String(note).trim() : '',
         createdAt: new Date().toISOString(),
       };
@@ -1350,7 +1502,7 @@ export function AppProvider({ children }) {
           const existingReps = Array.isArray(s.repurchases) ? s.repurchases : [];
           const allReps = [...existingReps, repurchase];
           const totalRec = round2(
-            allReps.reduce((acc, r) => acc + (r.isReceived ? Number(r.receivedQuantity) || 0 : 0), 0)
+            allReps.reduce((acc, r) => acc + (Number(r.receivedQuantity) || 0), 0)
           );
           const remainingQty = round2(Math.max(0, initial - totalRec));
 
@@ -1358,7 +1510,7 @@ export function AppProvider({ children }) {
           const historyEntry = {
             status: newStatus,
             timestamp: now,
-            note: isReceived
+            note: isRec
               ? `Dibeli & langsung diterima ${formatQty(qtyNum)} ${s.unit}`
               : `Dibeli ulang ${formatQty(qtyNum)} ${s.unit} (belum tiba)`,
           };
@@ -1389,12 +1541,25 @@ export function AppProvider({ children }) {
 
       const rep = (target.repurchases || []).find((r) => r.id === repurchaseId);
       if (!rep) return { ok: false, reason: 'Data pembelian ulang tidak ditemukan.' };
-      if (rep.isReceived) return { ok: false, reason: 'Barang sudah dicatat diterima sebelumnya.' };
 
-      const recQty = receivedQuantity != null ? round2(Number(receivedQuantity) || 0) : rep.quantity;
+      const currentRec = Number(rep.receivedQuantity) || 0;
+      const sisa = round2(Math.max(0, Number(rep.quantity) - currentRec));
+      if (sisa <= 0) {
+        return { ok: false, reason: 'Barang untuk pembelian ulang ini sudah selesai diterima seluruhnya.' };
+      }
+
+      const recQty = receivedQuantity != null ? round2(Number(receivedQuantity) || 0) : sisa;
       if (recQty <= 0) return { ok: false, reason: 'Jumlah yang diterima harus lebih dari 0.' };
+      if (recQty > round2(sisa + 1e-6)) {
+        return {
+          ok: false,
+          reason: `Jumlah yang diterima (${formatQty(recQty)} ${target.unit}) melebihi sisa pembelian ulang yang belum datang (${formatQty(sisa)} ${target.unit}).`,
+        };
+      }
 
-      const now = date ? new Date(date).toISOString() : new Date().toISOString();
+      const now = date
+        ? (date.includes('T') ? date : localDateToISO(date))
+        : new Date().toISOString();
       const factor = Number(target.factor) || 1;
       const baseQty = round2(recQty * factor);
 
@@ -1403,6 +1568,7 @@ export function AppProvider({ children }) {
       const beforeBase = stock ? Number(stock.quantity) || 0 : 0;
       const afterBase = round2(beforeBase + baseQty);
 
+      // Mutasi fisik inventaris stok
       setStocks((prev) =>
         upsertStock(
           prev,
@@ -1432,23 +1598,36 @@ export function AppProvider({ children }) {
       };
       setMovements((prev) => [movement, ...prev]);
 
+      const newReceipt = {
+        id: uid('rpr-'),
+        receivedQuantity: recQty,
+        date: now,
+        note: note ? String(note).trim() : '',
+      };
+
+      const newRecQty = round2(currentRec + recQty);
+      const isComplete = newRecQty >= rep.quantity;
+
+      const updatedRep = {
+        ...rep,
+        receipts: [...(rep.receipts || []), newReceipt],
+        receivedQuantity: newRecQty,
+        isReceived: isComplete,
+        status: isComplete ? 'selesai' : 'sebagian',
+        receivedAt: now,
+        receiveNote: note ? String(note).trim() : rep.receiveNote || '',
+      };
+
+      let updatedShortage = null;
       setShortages((prev) =>
         prev.map((s) => {
           if (s.id !== shortageId) return s;
           const initial = s.initialQuantity != null ? Number(s.initialQuantity) : Number(s.quantity) || 0;
           const updatedReps = (s.repurchases || []).map((r) =>
-            r.id === repurchaseId
-              ? {
-                  ...r,
-                  isReceived: true,
-                  receivedQuantity: recQty,
-                  receivedAt: now,
-                  receiveNote: note ? String(note).trim() : '',
-                }
-              : r
+            r.id === repurchaseId ? updatedRep : r
           );
           const totalRec = round2(
-            updatedReps.reduce((acc, r) => acc + (r.isReceived ? Number(r.receivedQuantity) || 0 : 0), 0)
+            updatedReps.reduce((acc, r) => acc + (Number(r.receivedQuantity) || 0), 0)
           );
           const remainingQty = round2(Math.max(0, initial - totalRec));
           const newStatus = remainingQty <= 0 ? 'terpenuhi' : 'sudah';
@@ -1456,10 +1635,10 @@ export function AppProvider({ children }) {
           const historyEntry = {
             status: newStatus,
             timestamp: now,
-            note: `Penerimaan pembelian ulang ${formatQty(recQty)} ${s.unit} tiba & masuk stok`,
+            note: `Penerimaan bertahap pembelian ulang: +${formatQty(recQty)} ${s.unit} tiba & masuk stok (${formatQty(newRecQty)}/${formatQty(rep.quantity)} diterima)`,
           };
 
-          return {
+          updatedShortage = {
             ...s,
             initialQuantity: initial,
             quantity: remainingQty,
@@ -1468,16 +1647,24 @@ export function AppProvider({ children }) {
             repurchases: updatedReps,
             statusHistory: [...(s.statusHistory || []), historyEntry],
           };
+          return updatedShortage;
         })
       );
 
       addActivityLog({
-        title: 'Barang Pembelian Ulang Diterima',
-        desc: `${formatQty(recQty)} ${target.unit} “${target.productNameSnapshot}” tiba & masuk stok`,
-        type: 'repurchase_received',
+        title: isComplete ? 'Pembelian Ulang Selesai Diterima' : 'Penerimaan Pembelian Ulang Sebagian',
+        desc: `+${formatQty(recQty)} ${target.unit} “${target.productNameSnapshot}” telah tiba & masuk stok (${formatQty(newRecQty)} dari ${formatQty(rep.quantity)} diterima)`,
+        type: isComplete ? 'repurchase_received' : 'repurchase_partial',
       });
 
-      return { ok: true };
+      return {
+        ok: true,
+        repurchase: updatedRep,
+        shortage: updatedShortage,
+        isComplete,
+        receivedQuantity: recQty,
+        totalReceived: newRecQty,
+      };
     },
     [shortages, products, stocks, upsertStock, baseNameOf, addActivityLog]
   );
@@ -1572,45 +1759,179 @@ export function AppProvider({ children }) {
 
   const validateBackup = useCallback((payload) => {
     if (!payload || typeof payload !== 'object') {
-      return { ok: false, reason: 'Berkas cadangan tidak valid atau kosong.' };
+      return { ok: false, valid: false, reason: 'Berkas cadangan tidak valid atau kosong.' };
     }
     const isAppMatch = payload.app === 'catatan-warung-madura' || payload.app === 'warung-madura';
     const d = payload.data && typeof payload.data === 'object' ? payload.data : payload;
 
+    // 1. Validasi Toko Pemasok (stores)
     if (!Array.isArray(d.stores)) {
-      return { ok: false, reason: 'Data toko pemasok (stores) tidak ditemukan atau tidak berformat array.' };
+      return { ok: false, valid: false, reason: 'Data toko pemasok (stores) tidak ditemukan atau tidak berformat array.' };
     }
-    if (!Array.isArray(d.products)) {
-      return { ok: false, reason: 'Data master barang (products) tidak ditemukan atau tidak berformat array.' };
+    const storeIds = new Set();
+    for (let i = 0; i < d.stores.length; i++) {
+      const s = d.stores[i];
+      if (!s || typeof s !== 'object' || !s.id || typeof s.name !== 'string' || !s.name.trim()) {
+        return {
+          ok: false,
+          valid: false,
+          reason: `Data toko pemasok pada baris #${i + 1} tidak valid (wajib memiliki ID dan nama).`,
+        };
+      }
+      storeIds.add(s.id);
     }
 
-    // Validasi integritas barang
-    for (const p of d.products) {
-      if (!p || typeof p !== 'object' || !p.name) {
-        return { ok: false, reason: 'Terdapat data barang yang rusak atau tidak memiliki nama.' };
+    // 2. Validasi Master Barang (products) & Satuan (units)
+    if (!Array.isArray(d.products)) {
+      return { ok: false, valid: false, reason: 'Data master barang (products) tidak ditemukan atau tidak berformat array.' };
+    }
+    const productIds = new Set();
+    const productUnitsMap = new Map();
+    for (let i = 0; i < d.products.length; i++) {
+      const p = d.products[i];
+      if (!p || typeof p !== 'object' || !p.id || typeof p.name !== 'string' || !p.name.trim()) {
+        return {
+          ok: false,
+          valid: false,
+          reason: `Data barang pada baris #${i + 1} tidak valid (wajib memiliki ID dan nama).`,
+        };
+      }
+      if (!Array.isArray(p.units) || p.units.length === 0) {
+        return {
+          ok: false,
+          valid: false,
+          reason: `Barang “${p.name}” tidak memiliki daftar satuan (units) yang valid.`,
+        };
+      }
+      const hasBaseUnit = p.units.some((u) => Number(u?.factor) === 1);
+      if (!hasBaseUnit) {
+        return {
+          ok: false,
+          valid: false,
+          reason: `Barang “${p.name}” tidak memiliki satuan dasar dengan faktor konversi 1.`,
+        };
+      }
+      productIds.add(p.id);
+      productUnitsMap.set(p.id, new Set(p.units.map((u) => u.id)));
+    }
+
+    const warnings = [];
+
+    // 3. Validasi Stok Inventaris (stocks)
+    if (d.stocks != null) {
+      if (!Array.isArray(d.stocks)) {
+        return { ok: false, valid: false, reason: 'Data stok inventaris (stocks) tidak berformat array.' };
+      }
+      for (let i = 0; i < d.stocks.length; i++) {
+        const st = d.stocks[i];
+        if (!st || typeof st !== 'object' || !st.productId) {
+          return { ok: false, valid: false, reason: `Data stok #${i + 1} tidak memiliki productId yang valid.` };
+        }
+        const qty = Number(st.quantity);
+        if (isNaN(qty) || qty < 0) {
+          return {
+            ok: false,
+            valid: false,
+            reason: `Data stok untuk barang ID "${st.productId}" tidak valid atau bernilai negatif (${st.quantity}).`,
+          };
+        }
+        if (!productIds.has(st.productId)) {
+          warnings.push(`Stok merujuk ke ID barang "${st.productId}" yang tidak terdaftar dalam master produk.`);
+        }
+      }
+    }
+
+    // 4. Validasi Pesanan (orders)
+    if (d.orders != null) {
+      if (!Array.isArray(d.orders)) {
+        return { ok: false, valid: false, reason: 'Data pesanan (orders) tidak berformat array.' };
+      }
+      for (let i = 0; i < d.orders.length; i++) {
+        const o = d.orders[i];
+        if (!o || typeof o !== 'object' || !o.id) {
+          return { ok: false, valid: false, reason: `Data pesanan #${i + 1} tidak memiliki ID yang valid.` };
+        }
+        if (o.storeId && !storeIds.has(o.storeId)) {
+          warnings.push(`Pesanan ${o.id} merujuk ke ID toko "${o.storeId}" yang tidak ada dalam daftar toko.`);
+        }
+        if (!Array.isArray(o.items)) {
+          return { ok: false, valid: false, reason: `Pesanan ${o.id} tidak memiliki rincian barang (items) yang valid.` };
+        }
+        for (const it of o.items) {
+          if (!it || typeof it !== 'object' || !it.productId) {
+            return { ok: false, valid: false, reason: `Item pada pesanan ${o.id} tidak memiliki productId valid.` };
+          }
+          if (!productIds.has(it.productId)) {
+            warnings.push(`Pesanan ${o.id} memuat barang ID "${it.productId}" yang tidak ada di master produk.`);
+          }
+        }
+      }
+    }
+
+    // 5. Validasi Harga Khusus Pemasok (storePrices)
+    if (d.storePrices != null) {
+      if (!Array.isArray(d.storePrices)) {
+        return { ok: false, valid: false, reason: 'Data harga toko (storePrices) tidak berformat array.' };
+      }
+      for (let i = 0; i < d.storePrices.length; i++) {
+        const sp = d.storePrices[i];
+        if (!sp || typeof sp !== 'object' || !sp.storeId || !sp.productId || !sp.unitId) {
+          return { ok: false, valid: false, reason: `Data harga toko #${i + 1} tidak lengkap.` };
+        }
+        const priceNum = Number(sp.price);
+        if (isNaN(priceNum) || priceNum < 0) {
+          return { ok: false, valid: false, reason: `Harga toko #${i + 1} bernilai tidak valid atau negatif.` };
+        }
+        if (!storeIds.has(sp.storeId)) {
+          warnings.push(`Harga khusus merujuk ke toko ID "${sp.storeId}" yang tidak terdaftar.`);
+        }
+        if (!productIds.has(sp.productId)) {
+          warnings.push(`Harga khusus merujuk ke barang ID "${sp.productId}" yang tidak terdaftar.`);
+        }
+      }
+    }
+
+    // 6. Validasi Kekurangan Barang (shortages)
+    if (d.shortages != null) {
+      if (!Array.isArray(d.shortages)) {
+        return { ok: false, valid: false, reason: 'Data kekurangan (shortages) tidak berformat array.' };
+      }
+      for (let i = 0; i < d.shortages.length; i++) {
+        const sk = d.shortages[i];
+        if (!sk || typeof sk !== 'object' || !sk.productId) {
+          return { ok: false, valid: false, reason: `Data kekurangan #${i + 1} tidak memiliki productId valid.` };
+        }
       }
     }
 
     const summary = {
+      storeName: (d.settings && d.settings.name) || 'Warung Madura',
       stores: d.stores.length,
       products: d.products.length,
       orders: Array.isArray(d.orders) ? d.orders.length : 0,
       stocks: Array.isArray(d.stocks) ? d.stocks.length : 0,
       shortages: Array.isArray(d.shortages) ? d.shortages.length : 0,
       movements: Array.isArray(d.movements) ? d.movements.length : 0,
-      exportedAt: payload.exportedAt || null,
-      version: payload.version || '1.0.0',
-      isOfficialApp: isAppMatch,
     };
 
-    return { ok: true, summary, validatedData: d };
+    return {
+      ok: true,
+      valid: true,
+      summary,
+      integrity: warnings.length > 0 ? 'warning' : 'valid',
+      warnings,
+      exportedAt: payload.exportedAt || null,
+      version: payload.version || '1.2.0',
+      isOfficialApp: isAppMatch,
+      validatedData: d,
+    };
   }, []);
 
   const importData = useCallback(
     (payload) => {
       const validation = validateBackup(payload);
-      if (!validation.ok) {
-        return { ok: false, reason: validation.reason };
+      if (!validation.ok || !validation.valid) {
+        return { ok: false, reason: validation.reason || 'Berkas cadangan tidak valid.' };
       }
 
       const d = validation.validatedData;
@@ -1629,6 +1950,19 @@ export function AppProvider({ children }) {
       const nextSettings = d.settings && typeof d.settings === 'object' ? d.settings : settings;
       const nextActivityLogs = Array.isArray(d.activityLogs) ? d.activityLogs : [];
 
+      // Snapshot data localStorage saat ini untuk atomic rollback jika terjadi kegagalan tulis
+      const snapshot = {};
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(PREFIX)) {
+            snapshot[k] = localStorage.getItem(k);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+
       // Validasi penulisan ke localStorage terlebih dahulu sebelum mengubah state React
       try {
         save('stores', nextStores);
@@ -1643,6 +1977,12 @@ export function AppProvider({ children }) {
         save('activityLogs', nextActivityLogs);
         save('readNotifIds', []);
       } catch (err) {
+        // Rollback atomik ke data sebelumnya jika gagal menulis ke localStorage
+        try {
+          Object.keys(snapshot).forEach((k) => localStorage.setItem(k, snapshot[k]));
+        } catch {
+          /* ignore */
+        }
         return {
           ok: false,
           reason: `Gagal menyimpan pemulihan data ke memori lokal: ${err.message || 'Kapasitas penuh'}`,
@@ -1662,12 +2002,19 @@ export function AppProvider({ children }) {
       setActivityLogs(nextActivityLogs);
       setReadNotifIds([]);
 
+      addActivityLog({
+        title: 'Pemulihan Cadangan Berhasil',
+        desc: `Data warung berhasil dipulihkan dari cadangan: ${nextProducts.length} barang, ${nextOrders.length} pesanan, ${nextStores.length} pemasok.`,
+        type: 'backup_restore',
+      });
+
       return {
         ok: true,
         summary: validation.summary,
+        warnings: validation.warnings,
       };
     },
-    [validateBackup, settings]
+    [validateBackup, settings, addActivityLog]
   );
 
   const activeOrders = useMemo(
@@ -1701,9 +2048,11 @@ export function AppProvider({ children }) {
   );
 
   // Barang yang perlu dibeli: habis (qty <= 0) atau menipis (qty di bawah minStock).
+  // Filter ketat: produk nonaktif (active === false) atau diarsipkan (archived === true) TIDAK dimasukkan.
   const needsRestock = useMemo(
     () =>
       products
+        .filter((p) => p.active !== false && !p.archived)
         .map((p) => {
           const stock = stocks.find((s) => s.productId === p.id);
           const qty = stock ? Number(stock.quantity) || 0 : 0;
@@ -1723,12 +2072,39 @@ export function AppProvider({ children }) {
 
   // Aktivitas Terbaru untuk Dashboard
   const activities = useMemo(() => {
-    const fromMovements = (movements || []).map((m) => {
+    const explicitLogs = activityLogs || [];
+
+    // Set untuk pelacakan referensi agar tidak terjadi pencatatan ganda
+    const explicitRefs = new Set();
+    for (const l of explicitLogs) {
+      if (l.desc) {
+        const matches = l.desc.match(/(P-\d{8}-\d{3}|mv-[a-z0-9]+|rp-[a-z0-9]+|sk-[a-z0-9]+)/g);
+        if (matches) {
+          matches.forEach((m) => explicitRefs.add(`${l.type}:${m}`));
+        }
+      }
+    }
+
+    const fromMovements = [];
+    for (const m of movements || []) {
+      const isRefExplicitlyLogged =
+        explicitRefs.has(`order_done:${m.ref}`) ||
+        explicitRefs.has(`order_partial:${m.ref}`) ||
+        explicitRefs.has(`repurchase_received:${m.ref}`) ||
+        explicitRefs.has(`repurchase_partial:${m.ref}`);
+
       let title = 'Penyesuaian Stok Dilakukan';
       let type = 'stock_adjust';
       if (m.type === 'receive') {
-        title = 'Pesanan Sudah Diterima';
-        type = 'order_done';
+        const isPartial = m.note?.includes('sebagian') || m.note?.includes('bertahap');
+        const isRepurchase = m.note?.includes('pembelian ulang') || m.note?.includes('Pembelian ulang');
+        if (isRepurchase) {
+          title = isPartial ? 'Penerimaan Pembelian Ulang Sebagian' : 'Penerimaan Pembelian Ulang';
+          type = isPartial ? 'repurchase_partial' : 'repurchase_received';
+        } else {
+          title = isPartial ? 'Penerimaan Barang Sebagian' : 'Penerimaan Barang Masuk';
+          type = isPartial ? 'order_partial' : 'order_done';
+        }
       } else if (m.type === 'masuk') {
         title = 'Stok Barang Bertambah';
         type = 'stock_in';
@@ -1736,41 +2112,69 @@ export function AppProvider({ children }) {
         title = 'Stok Barang Berkurang';
         type = 'stock_out';
       }
+
+      // Hindari duplikasi jika movement receive sudah tercatat di explicitLogs
+      if (m.type === 'receive' && isRefExplicitlyLogged) {
+        continue;
+      }
+
       const sign = m.diffBase > 0 ? '+' : '';
       const desc = `${m.productNameSnapshot}: ${sign}${formatQty(m.diffBase)} ${m.unitBaseName || 'pcs'}${
         m.note ? ` • “${m.note}”` : m.ref ? ` • Ref: ${m.ref}` : ''
       }`;
-      return {
+      fromMovements.push({
         id: `act-mv-${m.id}`,
         title,
         desc,
         timestamp: m.timestamp,
         type,
-      };
-    });
+      });
+    }
 
     const fromOrders = [];
     for (const o of orders || []) {
       const storeName = storeById(o.storeId)?.name || 'Pemasok';
-      fromOrders.push({
-        id: `act-ord-${o.id}`,
-        title: 'Pesanan Baru Dibuat',
-        desc: `Pesanan ${o.id} dibuat ke ${storeName} (${o.totalItems} barang)`,
-        timestamp: o.createdAt,
-        type: 'order_created',
-      });
-      if (o.status === 'selesai' || o.receipt) {
+
+      // Log pesanan dibuat: lewati jika sudah tercatat di explicitLogs
+      if (!explicitRefs.has(`order_created:${o.id}`)) {
         fromOrders.push({
-          id: `act-rec-${o.id}`,
-          title: 'Pesanan Sudah Diterima',
-          desc: `Penerimaan pesanan ${o.id} dari ${storeName} telah selesai dicatat ke stok`,
-          timestamp: o.receipt?.completedAt || o.receipt?.date || o.createdAt,
+          id: `act-ord-${o.id}`,
+          title: 'Pesanan Baru Dibuat',
+          desc: `Pesanan ${o.id} dibuat ke ${storeName} (${o.totalItems} barang)`,
+          timestamp: o.createdAt,
+          type: 'order_created',
+        });
+      }
+
+      // Log status pesanan: hanya catat jika belum ada di explicitLogs
+      if (o.status === 'selesai' && !explicitRefs.has(`order_done:${o.id}`)) {
+        fromOrders.push({
+          id: `act-ord-done-${o.id}`,
+          title: 'Pesanan Selesai Diterima',
+          desc: `Seluruh barang pesanan ${o.id} dari ${storeName} telah lengkap diterima & masuk stok`,
+          timestamp: o.updatedAt || o.createdAt,
           type: 'order_done',
+        });
+      } else if (o.status === 'sebagian' && !explicitRefs.has(`order_partial:${o.id}`)) {
+        fromOrders.push({
+          id: `act-ord-part-${o.id}`,
+          title: 'Penerimaan Barang Sebagian',
+          desc: `Penerimaan bertahap pesanan ${o.id} dari ${storeName} sedang berlangsung`,
+          timestamp: o.updatedAt || o.createdAt,
+          type: 'order_partial',
+        });
+      } else if (o.status === 'batal' && !explicitRefs.has(`order_cancel:${o.id}`)) {
+        fromOrders.push({
+          id: `act-ord-cancel-${o.id}`,
+          title: 'Pesanan Dibatalkan',
+          desc: `Pesanan ${o.id} (${storeName}) dibatalkan${o.cancelReason ? `: ${o.cancelReason}` : ''}`,
+          timestamp: o.updatedAt || o.createdAt,
+          type: 'order_cancel',
         });
       }
     }
 
-    const combined = [...activityLogs, ...fromMovements, ...fromOrders];
+    const combined = [...explicitLogs, ...fromMovements, ...fromOrders];
     combined.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
 
     const seen = new Set();
@@ -1909,7 +2313,13 @@ export function AppProvider({ children }) {
 
       if (notifSettings.orderUnfulfilled) {
         const hasUnfulfilled = (o.items || []).some((it) => (it.receivedQuantity || 0) < it.quantity);
-        if (hasUnfulfilled && o.status !== 'batal' && o.status !== 'dibatalkan') {
+        if (
+          hasUnfulfilled &&
+          o.status !== 'batal' &&
+          o.status !== 'dibatalkan' &&
+          o.status !== 'belum_diterima' &&
+          o.status !== 'active'
+        ) {
           list.push({
             id: `notif-order-unfulfilled-${o.id}`,
             category: 'pesanan',
@@ -2015,6 +2425,7 @@ export function AppProvider({ children }) {
     baseNameOf,
     priceOfStore,
     saveStorePrices,
+    resetStorePrice,
     createStore,
     updateStore,
     deleteStore,
