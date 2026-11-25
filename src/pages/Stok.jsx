@@ -1482,7 +1482,7 @@ function PenyesuaianModal({ open, onClose, preset, initialMode = 'tambah' }) {
         </>
       }
     >
-      <div className="min-h-[22rem]">
+      <div className="space-y-4">
         <div className="mb-4 grid grid-cols-2 gap-1 rounded-xl bg-primary-soft/50 p-1 sm:grid-cols-4">
           {ADJUST_MODES.map((m) => {
             const active = m.id === mode;

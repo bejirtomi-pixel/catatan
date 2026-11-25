@@ -70,6 +70,7 @@ export default function Barang() {
   // Filter states
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('semua');
+  const [storeFilter, setStoreFilter] = useState('semua'); // 'semua' | 'tanpa_pemasok' | storeId
   const [statusFilter, setStatusFilter] = useState('semua'); // 'semua' | 'aktif' | 'arsip'
 
   // Pagination & Display settings
@@ -104,6 +105,15 @@ export default function Barang() {
     [products]
   );
 
+  const storeOptions = useMemo(
+    () => [
+      { id: 'semua', label: 'Semua Pemasok' },
+      { id: 'tanpa_pemasok', label: '— Tanpa Pemasok —' },
+      ...stores.map((s) => ({ id: s.id, label: s.name })),
+    ],
+    [stores]
+  );
+
   // Filtered products list
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -111,31 +121,52 @@ export default function Barang() {
       // Filter Kategori
       if (cat !== 'semua' && (p.category || '').trim() !== cat) return false;
 
+      // Filter Pemasok / Toko
+      if (storeFilter !== 'semua') {
+        const sIds = Array.isArray(p.storeIds) ? p.storeIds : [];
+        if (storeFilter === 'tanpa_pemasok') {
+          if (sIds.length > 0) return false;
+        } else {
+          if (!sIds.includes(storeFilter)) return false;
+        }
+      }
+
       // Filter Status Aktif / Diarsipkan
       const isArchived = !!p.archived || p.active === false;
       if (statusFilter === 'aktif' && isArchived) return false;
       if (statusFilter === 'arsip' && !isArchived) return false;
 
-      // Filter Pencarian nama barang, kategori, deskripsi, promo
+      // Filter Pencarian nama barang, kategori, deskripsi, promo, nama pemasok
       if (!q) return true;
+      const storeNames = (p.storeIds || [])
+        .map((id) => stores.find((s) => s.id === id)?.name || '')
+        .join(' ')
+        .toLowerCase();
+
       return (
         p.name.toLowerCase().includes(q) ||
         (p.category || '').toLowerCase().includes(q) ||
         (p.description || '').toLowerCase().includes(q) ||
-        (p.promoTitle || '').toLowerCase().includes(q)
+        (p.promoTitle || '').toLowerCase().includes(q) ||
+        storeNames.includes(q)
       );
     });
-  }, [products, search, cat, statusFilter]);
+  }, [products, stores, search, cat, storeFilter, statusFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const rows = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  const hasFilter = search.trim() !== '' || cat !== 'semua' || statusFilter !== 'semua';
+  const hasFilter =
+    search.trim() !== '' ||
+    cat !== 'semua' ||
+    storeFilter !== 'semua' ||
+    statusFilter !== 'semua';
 
   const resetFilter = () => {
     setSearch('');
     setCat('semua');
+    setStoreFilter('semua');
     setStatusFilter('semua');
     setPage(1);
   };
@@ -288,7 +319,7 @@ export default function Barang() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3 flex-1">
             {/* Filter Kategori */}
-            <label className="block min-w-[11rem] flex-1 sm:max-w-xs">
+            <label className="block min-w-[10rem] flex-1 sm:max-w-xs">
               <span className="label">Kategori</span>
               <select
                 data-testid="filter-kategori"
@@ -302,6 +333,26 @@ export default function Barang() {
                 {categoryOptions.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {/* Filter Pemasok / Toko */}
+            <label className="block min-w-[10rem] flex-1 sm:max-w-xs">
+              <span className="label">Pemasok / Toko</span>
+              <select
+                data-testid="filter-pemasok"
+                value={storeFilter}
+                onChange={(e) => {
+                  setStoreFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="input w-full pr-8"
+              >
+                {storeOptions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
                   </option>
                 ))}
               </select>

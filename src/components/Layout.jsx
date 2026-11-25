@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BarChart3, Boxes, ClipboardList, LayoutDashboard, Menu, Package, Settings } from 'lucide-react';
+import { BarChart3, Boxes, CalendarClock, ClipboardList, LayoutDashboard, Menu, Package, Settings, Smartphone } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { cx } from './UI';
 import Logo from './Logo';
 import NotificationBell from './NotificationBell';
+import OperatorSwitcher from './OperatorSwitcher';
 import Sidebar, { NAV } from './Sidebar';
 import ToastHost from './Toast';
 
@@ -14,6 +15,8 @@ const MOBILE_NAV = [
   { to: '/barang', label: 'Barang', icon: Package },
   { to: '/pesanan', label: 'Pesanan', icon: ClipboardList },
   { to: '/stok', label: 'Stok', icon: Boxes },
+  { to: '/kunjungan', label: 'Kunjungan', icon: CalendarClock },
+  { to: '/catatan-digital', label: 'Digital', icon: Smartphone },
   { to: '/laporan', label: 'Laporan', icon: BarChart3 },
 ];
 
@@ -43,6 +46,7 @@ export default function Layout() {
             <p className="hidden text-[11px] text-ink-soft sm:block">Catatan Stok &amp; Pesanan</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <OperatorSwitcher compact />
             <NotificationBell />
             <Link
               to="/pengaturan"

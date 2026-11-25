@@ -87,6 +87,46 @@ export const uid = (prefix = '') =>
   Math.random().toString(36).slice(2, 8) +
   Date.now().toString(36).slice(-4);
 
+// Tambah/kurang hari dari string YYYY-MM-DD secara aman (tanpa timezone skew)
+export const addDays = (dateStr, days) => {
+  if (!dateStr) return getLocalDateString();
+  const parts = String(dateStr).slice(0, 10).split('-').map(Number);
+  if (parts.length !== 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) {
+    return getLocalDateString();
+  }
+  const [y, m, d] = parts;
+  const target = new Date(y, m - 1, d + Number(days));
+  const ty = target.getFullYear();
+  const tm = String(target.getMonth() + 1).padStart(2, '0');
+  const td = String(target.getDate()).padStart(2, '0');
+  return `${ty}-${tm}-${td}`;
+};
+
+// Nama hari dalam bahasa Indonesia
+const HARI_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+export const getDayNameId = (dateStr) => {
+  if (!dateStr) return '';
+  const parts = String(dateStr).slice(0, 10).split('-').map(Number);
+  if (parts.length !== 3) return '';
+  const d = new Date(parts[0], parts[1] - 1, parts[2]);
+  return isNaN(d.getTime()) ? '' : HARI_ID[d.getDay()];
+};
+
+// Format tanggal ramah bahasa Indonesia (misal: "Senin, 25 Nov 2026")
+export const formatDateId = (dateStr) => {
+  if (!dateStr) return '—';
+  const parts = String(dateStr).slice(0, 10).split('-').map(Number);
+  if (parts.length !== 3) return '—';
+  const d = new Date(parts[0], parts[1] - 1, parts[2]);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('id-ID', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+};
+
 /* ---------- Angka jumlah ---------- */
 export const formatQty = (n) => {
   const num = Number(n);
@@ -182,3 +222,20 @@ export const unitRelations = (units) => {
       text: `1 ${u.name} = ${formatQty(u.factor)} ${base ? base.name : 'pcs'}`,
     }));
 };
+
+/**
+ * Generator checksum data terenkapsulasi yang deterministik & cepat
+ */
+export function computeDataChecksum(obj) {
+  try {
+    const str = JSON.stringify(obj);
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return 'chk_' + Math.abs(hash).toString(16);
+  } catch {
+    return 'chk_0';
+  }
+}

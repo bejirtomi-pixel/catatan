@@ -1,0 +1,337 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Blokir seluruh akses tanpa kecuali di level root database
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Fungsi Pembantu: Verifikasi Autentikasi Dasar
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    // Fungsi Pembantu: Verifikasi Kepemilikan Toko Berdasarkan ownerUid Murni
+    function isStoreOwner(storeId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/stores_app/$(storeId)) &&
+        request.auth.uid == get(/databases/$(database)/documents/stores_app/$(storeId)).data.ownerUid;
+    }
+
+    // Fungsi Pembantu: Pengecekan Kunci Pemeliharaan (Maintenance Lock)
+    // Aman meskipun dokumen maintenance_lock belum pernah dibuat
+    function isNotMaintenanceLocked(storeId) {
+      return !exists(/databases/$(database)/documents/stores_app/$(storeId)/meta/maintenance_lock) ||
+             !get(/databases/$(database)/documents/stores_app/$(storeId)/meta/maintenance_lock).data.inProgress;
+    }
+
+    function isValidTimestamp(val) {
+      return val is string && val.size() >= 19;
+    }
+
+    // Helper Immutabilitas Field Ketat: Field wajib ada dan nilainya dilarang diubah
+    function isImmutableKey(keyName) {
+      return (keyName in request.resource.data) &&
+             (keyName in resource.data) &&
+             request.resource.data[keyName] == resource.data[keyName];
+    }
+
+    // Validasi Atomisitas Pembaruan Stok & Movement Menggunakan getAfter
+    function isValidStockUpdate(storeId, productId) {
+      let isQtyUnchanged = request.resource.data.quantity == resource.data.quantity;
+      return isQtyUnchanged || (
+        ('lastReconciledOpId' in request.resource.data) &&
+        request.resource.data.lastReconciledOpId is string &&
+        request.resource.data.lastReconciledOpId.size() > 0 &&
+        existsAfter(/databases/$(database)/documents/stores_app/$(storeId)/movements/$(request.resource.data.lastReconciledOpId)) &&
+        getAfter(/databases/$(database)/documents/stores_app/$(storeId)/movements/$(request.resource.data.lastReconciledOpId)).data.productId == productId &&
+        getAfter(/databases/$(database)/documents/stores_app/$(storeId)/movements/$(request.resource.data.lastReconciledOpId)).data.diffBase == (request.resource.data.quantity - resource.data.quantity) &&
+        (
+          (request.resource.data.quantity < 0 && request.resource.data.hasStockAnomaly == true) ||
+          (request.resource.data.quantity >= 0 && (!('hasStockAnomaly' in request.resource.data) || request.resource.data.hasStockAnomaly == false))
+        )
+      );
+    }
+
+    // =========================================================================
+    // 2. ATURAN TRANSISI TERPROTEKSI UNTUK BACKUP LAMA (warung_madura/latest_backup)
+    // =========================================================================
+    match /warung_madura/{docId} {
+      // Membaca backup hanya untuk pemilik data atau inisialisasi awal
+      allow read: if isAuthenticated() && (
+        resource == null || !('ownerUid' in resource.data) || resource.data.ownerUid == request.auth.uid
+      );
+      // Pembuatan awal wajib menyertakan stempel ownerUid yang cocok
+      allow create: if isAuthenticated() && request.resource.data.ownerUid == request.auth.uid;
+      // Pembaruan wajib mempertahankan ownerUid yang sama, atau mengklaim doc warisan tanpa ownerUid
+      allow update: if isAuthenticated() && (
+        (!('ownerUid' in resource.data) && request.resource.data.ownerUid == request.auth.uid) ||
+        (resource.data.ownerUid == request.auth.uid && request.resource.data.ownerUid == resource.data.ownerUid)
+      );
+      allow delete: if false; // Backup lama dilarang dihapus dari klien
+    }
+
+    // =========================================================================
+    // 3. LINGKUP AKSES TOKO OPERASIONAL WARUNG (stores_app/{storeId})
+    // =========================================================================
+    match /stores_app/{storeId} {
+
+      // Profil Utama Warung
+      allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if isStoreOwner(storeId) && isImmutableKey('ownerUid');
+      allow delete: if false; // Profil warung dilarang dihapus
+
+      // -------------------------------------------------------------
+      // SUBKOLEKSI: KOLEKSI META (ATURAN SPESIFIK PER DOKUMEN)
+      // -------------------------------------------------------------
+      match /meta/settings {
+        allow read: if isStoreOwner(storeId);
+        allow write: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && isValidTimestamp(request.resource.data.updatedAt);
+      }
+
+      match /meta/notifications {
+        allow read: if isStoreOwner(storeId);
+        allow write: if isStoreOwner(storeId)
+          && request.resource.data.readNotifIds is list;
+      }
+
+      match /meta/migration_status {
+        allow read: if isStoreOwner(storeId);
+        allow write: if isStoreOwner(storeId)
+          && request.resource.data.isFullyCompleted is bool;
+      }
+
+      match /meta/maintenance_lock {
+        allow read: if isStoreOwner(storeId);
+        allow write: if isStoreOwner(storeId)
+          && request.resource.data.inProgress is bool
+          && request.resource.data.jobId is string;
+      }
+
+      match /meta/version_pointer {
+        allow read: if isStoreOwner(storeId);
+        allow write: if isStoreOwner(storeId)
+          && request.resource.data.activeVersion is string;
+      }
+
+      // -------------------------------------------------------------
+      // SUBKOLEKSI: OPERATOR DINAMIS (PENCATATAN IDENTITAS MURNI)
+      // -------------------------------------------------------------
+      match /operators/{operatorId} {
+        allow read: if isStoreOwner(storeId);
+        allow create, update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.operatorId is string && request.resource.data.operatorId.size() > 0
+          && request.resource.data.operatorName is string && request.resource.data.operatorName.size() > 0
+          && request.resource.data.status in ['aktif', 'nonaktif']
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
+      // -------------------------------------------------------------
+      // SUBKOLEKSI: MASTER BARANG & STOK INVENTARIS
+      // -------------------------------------------------------------
+      match /products/{productId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && request.resource.data.units is list
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && isImmutableKey('id')
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
+      match /stocks/{productId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.productId is string
+          && request.resource.data.quantity is number
+          && (
+            (request.resource.data.quantity < 0 && request.resource.data.hasStockAnomaly == true) ||
+            (request.resource.data.quantity >= 0 && (!('hasStockAnomaly' in request.resource.data) || request.resource.data.hasStockAnomaly == false))
+          )
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && isImmutableKey('productId')
+          && request.resource.data.quantity is number
+          && isValidStockUpdate(storeId, productId)
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if false; // Dokumen stok fisik dilarang dihapus
+      }
+
+      // -------------------------------------------------------------
+      // SUBKOLEKSI: PEMASOK, HARGA & KATALOG
+      // -------------------------------------------------------------
+      match /suppliers/{supplierId} {
+        allow read: if isStoreOwner(storeId);
+        allow create, update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
+      match /store_prices/{priceId} {
+        allow read: if isStoreOwner(storeId);
+        allow create, update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.price is number && request.resource.data.price >= 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
+      match /supplier_catalog/{catalogId} {
+        allow read: if isStoreOwner(storeId);
+        allow create, update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.supplierId is string
+          && request.resource.data.packagingUnit is string
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
+      match /draft_carts/{supplierId} {
+        allow read, write: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
+      // -------------------------------------------------------------
+      // SUBKOLEKSI: JADWAL KUNJUNGAN SALES & LOG
+      // -------------------------------------------------------------
+      match /visit_schedules/{scheduleId} {
+        allow read: if isStoreOwner(storeId);
+        allow create, update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.supplierId is string
+          && request.resource.data.routeName is string
+          && request.resource.data.frequency in ['mingguan', 'dua_mingguan']
+          && request.resource.data.status in ['aktif', 'nonaktif']
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
+      match /visit_logs/{logId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.scheduleId is string
+          && request.resource.data.status in ['menunggu', 'selesai', 'terlewat']
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.status in ['menunggu', 'selesai', 'terlewat']
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if false; // Riwayat kunjungan dilarang dihapus
+      }
+
+      // -------------------------------------------------------------
+      // SUBKOLEKSI: PESANAN & PENERIMAAN SEBAGIAN
+      // -------------------------------------------------------------
+      match /orders/{orderId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.items is list
+          && request.resource.data.status in ['menunggu', 'sebagian', 'selesai', 'dibatalkan']
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && isImmutableKey('id')
+          && request.resource.data.status in ['menunggu', 'sebagian', 'selesai', 'dibatalkan']
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId) && resource.data.status == 'menunggu';
+      }
+
+      match /shortages/{shortageId} {
+        allow read: if isStoreOwner(storeId);
+        allow create, update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.quantity is number && request.resource.data.quantity > 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
+      // -------------------------------------------------------------
+      // SUBKOLEKSI: CATATAN DIGITAL LAYANAN PELANGGAN
+      // -------------------------------------------------------------
+      match /digital_notes/{transactionId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.source in ['AA', 'Warung']
+          && request.resource.data.nominalPokok is number && request.resource.data.nominalPokok >= 0
+          && request.resource.data.adminFee is number && request.resource.data.adminFee >= 0
+          && request.resource.data.totalReceived == (request.resource.data.nominalPokok + request.resource.data.adminFee)
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && isImmutableKey('id')
+          && request.resource.data.totalReceived == (request.resource.data.nominalPokok + request.resource.data.adminFee)
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId) && resource.data.status == 'dibatalkan';
+      }
+
+      // -------------------------------------------------------------
+      // BUKU AUDIT HISTORIS: MUTASI & AKTIVITAS (DILARANG UBAH & HAPUS)
+      // -------------------------------------------------------------
+      match /movements/{opId} {
+        allow read: if isStoreOwner(storeId);
+        // Mutasi stok menggunakan opId unik permanen, hanya bisa create baru
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.productId is string
+          && request.resource.data.diffBase is number
+          && request.resource.data.operator.operatorName is string
+          && isValidTimestamp(request.resource.data.timestamp);
+        allow update, delete: if false; // Mutasi stok dilarang diedit atau dihapus
+      }
+
+      match /activity_logs/{logId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.action is string
+          && request.resource.data.operator.operatorName is string;
+        allow update, delete: if false; // Log audit dilarang dimanipulasi
+      }
+
+      match /price_history/{historyId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+        allow update, delete: if false; // Riwayat harga beli bersifat abadi
+      }
+
+      // -------------------------------------------------------------
+      // SUBKOLEKSI: LEDGER IDEMPOTENSI OPERASI SERVER (FASE 3A)
+      // -------------------------------------------------------------
+      match /operations_log/{opId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.opId is string && request.resource.data.opId.size() > 0
+          && request.resource.data.ownerUid == request.auth.uid
+          && isValidTimestamp(request.resource.data.clientTimestamp);
+        allow update, delete: if false; // Buku audit ledger transaksi server bersifat abadi
+      }
+
+      // -------------------------------------------------------------
+      // AREA STAGING RESTORE (HANYA DIIZINKAN SAAT MAINTENANCE LOCK AKTIF)
+      // -------------------------------------------------------------
+      match /restore_staging/{jobId}/{subcol}/{docId} {
+        allow read, write: if isStoreOwner(storeId)
+          && exists(/databases/$(database)/documents/stores_app/$(storeId)/meta/maintenance_lock)
+          && get(/databases/$(database)/documents/stores_app/$(storeId)/meta/maintenance_lock).data.inProgress == true;
+      }
+    }
+  }
+}

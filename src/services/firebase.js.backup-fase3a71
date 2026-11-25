@@ -1,0 +1,226 @@
+// Firebase Configuration & Service for Aplikasi Catatan Warung Madura
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc } from 'firebase/firestore';
+import {
+  getAuth,
+  connectAuthEmulator,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+  browserLocalPersistence,
+  setPersistence,
+} from 'firebase/auth';
+
+const firebaseConfig = {
+  apiKey: 'AIzaSyB7McjvZznl0Ic8AXvxJkSxfrzjZ4YNe-w',
+  authDomain: 'catatan-b7384.firebaseapp.com',
+  projectId: 'catatan-b7384',
+  storageBucket: 'catatan-b7384.firebasestorage.app',
+  messagingSenderId: '626148444697',
+  appId: '1:626148444697:web:bc8ae07f060a5ccfcfb888',
+};
+
+// Inisialisasi Firebase App secara aman (singleton)
+export const app = getApps().find((a) => a.name === '[DEFAULT]') || initializeApp(firebaseConfig);
+export const db = getFirestore(app);
+export const auth = getAuth(app);
+
+// =============================================================================
+// EMULATOR GUARD & ENVIRONMENT ISOLATION (FASE 3A.6: RSK-02)
+// =============================================================================
+export const EMULATOR_CONFIG = {
+  host: '127.0.0.1',
+  firestorePort: 8080,
+  authPort: 9099,
+  authUrl: 'http://127.0.0.1:9099',
+};
+
+// Deteksi lingkungan:
+// Vite mengeset import.meta.env.DEV = true saat development (npm run dev)
+// import.meta.env.PROD = true saat production build
+const isViteDev = typeof import.meta !== 'undefined' && Boolean(import.meta.env?.DEV);
+const isExplicitEmulator =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_USE_FIREBASE_EMULATOR === 'true') ||
+  (typeof process !== 'undefined' && process.env?.VITE_USE_FIREBASE_EMULATOR === 'true');
+
+export const shouldConnectEmulator = isViteDev || isExplicitEmulator;
+
+// Flag global anti-duplicate connection untuk mencegah crash akibat Vite HMR
+const EMULATOR_FLAG = '__CATATAN_FIREBASE_EMULATOR_CONNECTED__';
+
+export function connectEmulatorsSafely(dbInstance = db, authInstance = auth) {
+  const g = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : {});
+  if (g[EMULATOR_FLAG]) {
+    return { connected: true, alreadyConnected: true };
+  }
+
+  try {
+    connectFirestoreEmulator(dbInstance, EMULATOR_CONFIG.host, EMULATOR_CONFIG.firestorePort);
+    connectAuthEmulator(authInstance, EMULATOR_CONFIG.authUrl, { disableWarnings: true });
+    g[EMULATOR_FLAG] = true;
+    console.info(
+      `[Firebase Emulator Guard] Berhasil terhubung ke Emulator Lokal (${EMULATOR_CONFIG.host}:${EMULATOR_CONFIG.firestorePort}, Auth: ${EMULATOR_CONFIG.authPort}). Endpoint Production TERISOLASI.`
+    );
+    return { connected: true, alreadyConnected: false };
+  } catch (err) {
+    console.error('[Firebase Emulator Guard] Gagal menghubungkan ke emulator lokal:', err);
+    // FAIL-SAFE: Jangan biarkan fallback ke production diam-diam!
+    throw new Error(
+      `[Firebase Emulator Guard] Gagal menghubungkan ke emulator lokal (${err.message}). Demi keamanan data, koneksi ke Production diblokir.`
+    );
+  }
+}
+
+// Otomatis aktifkan Emulator Guard di lingkungan development
+if (shouldConnectEmulator) {
+  try {
+    connectEmulatorsSafely(db, auth);
+  } catch (e) {
+    console.error(e.message);
+  }
+}
+
+export function getEmulatorStatus() {
+  const g = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : {});
+  return {
+    isConfiguredForEmulator: shouldConnectEmulator,
+    isConnected: Boolean(g[EMULATOR_FLAG]),
+    config: shouldConnectEmulator ? { ...EMULATOR_CONFIG } : null,
+  };
+}
+
+// Pastikan persistensi login tersimpan di browser secara lokal
+if (typeof window !== 'undefined') {
+  setPersistence(auth, browserLocalPersistence).catch((err) => {
+    console.warn('Firebase setPersistence warning:', err);
+  });
+}
+
+// Konfigurasi Google Auth Provider
+const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+/**
+ * Autentikasi Pengguna menggunakan Google Sign-In
+ */
+export async function loginWithGoogle() {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return { ok: true, user: result.user };
+  } catch (err) {
+    let friendlyMessage = 'Gagal masuk dengan Google.';
+    if (err.code === 'auth/popup-closed-by-user') {
+      friendlyMessage = 'Jendela login Google ditutup sebelum proses selesai.';
+    } else if (err.code === 'auth/network-request-failed') {
+      friendlyMessage = 'Koneksi internet bermasalah. Periksa jaringan Anda.';
+    } else if (err.code === 'auth/cancelled-popup-request') {
+      friendlyMessage = 'Proses login sebelumnya dibatalkan.';
+    } else if (err.code === 'auth/popup-blocked') {
+      friendlyMessage = 'Jendela pop-up login diblokir oleh browser. Izinkan pop-up untuk situs ini.';
+    } else if (err.code === 'auth/unauthorized-domain') {
+      friendlyMessage = 'Domain aplikasi belum didaftarkan di Firebase Authentication console.';
+    } else if (err?.message) {
+      friendlyMessage = err.message;
+    }
+    return { ok: false, error: friendlyMessage, code: err.code };
+  }
+}
+
+/**
+ * Keluar dari Akun Firebase
+ */
+export async function logoutFirebase() {
+  try {
+    await signOut(auth);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'Gagal keluar dari akun Google.' };
+  }
+}
+
+/**
+ * Langganan status autentikasi real-time
+ */
+export function subscribeToAuth(callback) {
+  return onAuthStateChanged(auth, callback);
+}
+
+/**
+ * Ambil pengguna saat ini
+ */
+export function getCurrentUser() {
+  return auth.currentUser;
+}
+
+/**
+ * Simpan seluruh snapshot cadangan warung ke Cloud Firestore
+ * Terikat secara ketat dengan ownerUid pengguna yang login
+ * Koleksi: warung_madura -> Dokumen: latest_backup
+ */
+export async function saveBackupToCloud(backupData, explicitOwnerUid) {
+  try {
+    const currentUser = auth.currentUser;
+    const ownerUid = explicitOwnerUid || currentUser?.uid;
+
+    if (!ownerUid) {
+      return {
+        ok: false,
+        reason: 'Pengguna harus login terlebih dahulu dengan akun Google untuk menyimpan cadangan ke cloud.',
+      };
+    }
+
+    const docRef = doc(db, 'warung_madura', 'latest_backup');
+    await setDoc(docRef, {
+      ...backupData,
+      ownerUid,
+      cloudSavedAt: new Date().toISOString(),
+    });
+    return { ok: true, ownerUid };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err?.message || 'Gagal menyimpan data cadangan ke Firebase Cloud.',
+    };
+  }
+}
+
+/**
+ * Ambil snapshot cadangan terakhir dari Cloud Firestore
+ * Memverifikasi integritas kepemilikan ownerUid
+ */
+export async function fetchBackupFromCloud(explicitOwnerUid) {
+  try {
+    const currentUser = auth.currentUser;
+    const ownerUid = explicitOwnerUid || currentUser?.uid;
+
+    if (!ownerUid) {
+      return {
+        ok: false,
+        reason: 'Pengguna harus login terlebih dahulu dengan akun Google untuk mengambil data cadangan cloud.',
+      };
+    }
+
+    const docRef = doc(db, 'warung_madura', 'latest_backup');
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) {
+      return { ok: false, reason: 'Belum ada data cadangan yang tersimpan di cloud Firebase.' };
+    }
+    const data = snap.data();
+
+    // Verifikasi isolasi kepemilikan cadangan
+    if (data.ownerUid && data.ownerUid !== ownerUid) {
+      return {
+        ok: false,
+        reason: 'Akses ditolak: Data cadangan cloud ini milik akun pemilik lain.',
+      };
+    }
+
+    return { ok: true, data };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err?.message || 'Gagal mengambil data cadangan dari Firebase Cloud.',
+    };
+  }
+}

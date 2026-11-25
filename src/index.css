@@ -132,3 +132,81 @@
     @apply overflow-x-auto;
   }
 }
+
+/* ============================================================ */
+/* PRINT MEDIA STYLES: Rapi, Bebas Kliping, & Siap Struk        */
+/* ============================================================ */
+@media print {
+  /* Sembunyikan elemen non-cetak: navigasi, aside, header app, dan tombol */
+  nav,
+  header,
+  aside,
+  .no-print,
+  button:not(.allow-print),
+  [role="navigation"] {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #111827 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    font-size: 12pt !important;
+  }
+
+  /* Hilangkan backdrop gelap modal dan buat modal full-width saat print */
+  .fixed.inset-0 {
+    position: static !important;
+    display: block !important;
+    padding: 0 !important;
+    z-index: auto !important;
+  }
+
+  /* Sembunyikan backdrop overlay */
+  .fixed.inset-0 > div:first-child {
+    display: none !important;
+  }
+
+  /* Kontainer modal tampil utuh */
+  .fixed.inset-0 > div:last-child {
+    box-shadow: none !important;
+    border: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    transform: none !important;
+    background: #ffffff !important;
+  }
+
+  /* Buka seluruh konten scrollable agar semua rincian pesanan tercetak utuh */
+  .max-h-\[72vh\],
+  .max-h-\[80vh\],
+  .max-h-\[85vh\],
+  .overflow-y-auto {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  /* Sembunyikan footer modal (tombol aksi) saat print */
+  .fixed.inset-0 .border-t {
+    display: none !important;
+  }
+
+  /* Tabel dan border cetak */
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+
+  th,
+  td {
+    padding: 6px 8px !important;
+    border-bottom: 1px solid #e5e7eb !important;
+  }
+
+  @page {
+    margin: 10mm;
+    size: auto;
+  }
+}

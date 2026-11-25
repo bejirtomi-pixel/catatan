@@ -1,0 +1,30 @@
+// BACKUP SECURITY RULES AKTIF SAAT INI (Versi Published: 18 Nov 2026, 10:06 AM)
+// Proyek: catatan-b7384
+// File ini disimpan sebagai prosedur rollback darurat ke Firebase Console
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Tolak seluruh akses tanpa login
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Akses operasional warung hanya untuk akun terotentikasi
+    match /stores_app/{storeId} {
+      allow read, write: if request.auth != null;
+
+      // Akses ke seluruh subkoleksi operasional warung
+      match /{subcollection}/{docId} {
+        allow read: if request.auth != null;
+        
+        // Validasi integritas dasar saat tulis
+        allow create, update: if request.auth != null 
+          && request.resource.data.updatedAt is string;
+          
+        allow delete: if request.auth != null;
+      }
+    }
+  }
+}

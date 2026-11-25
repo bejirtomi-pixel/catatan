@@ -100,7 +100,9 @@ export default function OrderDetailModal({ order, onClose, initialReceiveOpen = 
   };
 
   const handlePrint = () => {
-    window.print();
+    setTimeout(() => {
+      window.print();
+    }, 50);
   };
 
   return (

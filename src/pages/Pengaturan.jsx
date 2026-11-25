@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -30,14 +30,29 @@ import {
   Store,
   Trash2,
   Upload,
+  User,
+  UserCheck,
+  UserPlus,
+  Users,
+  Edit3,
+  ShieldCheck,
   X,
 } from 'lucide-react';
 import { DEFAULT_NOTIFICATIONS, useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import { dateCompact, formatDateTime, formatQty } from '../utils/format';
 import { compressImage } from '../utils/image';
 import { Btn, ConfirmModal, Field, Input, Modal, PageHeader, Textarea, cx } from '../components/UI';
 import Logo from '../components/Logo';
 import { saveBackupToCloud, fetchBackupFromCloud } from '../services/firebase';
+import {
+  getSyncState,
+  subscribeSyncState,
+  triggerSyncNow,
+  previewSupplierBackfill,
+  executeSupplierBackfill,
+  SYNC_ENGINE_STATUS,
+} from '../services/syncEngine';
 
 // 6 Tema Warna Resmi Warung Madura
 const THEMES = [
@@ -86,6 +101,7 @@ const THEMES = [
 ];
 
 export default function Pengaturan() {
+  const { currentUser, ownerUid } = useAuth();
   const {
     settings,
     updateSettings,
@@ -95,13 +111,28 @@ export default function Pengaturan() {
     buildBackup,
     importData,
     validateBackup,
+    rollbackLastRestore,
+    getPreRestoreSnapshotInfo,
+    storageStatus,
     stores,
     products,
     stocks,
     orders,
     movements,
     shortages,
+    operators,
+    activeOperator,
+    activeOperatorId,
+    setActiveOperatorId,
+    addOperator,
+    updateOperator,
+    toggleOperatorStatus,
   } = useApp();
+
+  // State Manajemen Operator
+  const [newOpName, setNewOpName] = useState('');
+  const [editingOpId, setEditingOpId] = useState(null);
+  const [editingOpName, setEditingOpName] = useState('');
 
   // 1. State Profil Toko
   const [name, setName] = useState(settings.name || 'Warung Madura');
@@ -136,7 +167,103 @@ export default function Pengaturan() {
   const [restoreModalOpen, setRestoreModalOpen] = useState(false);
   const [importError, setImportError] = useState('');
   const [cloudBusy, setCloudBusy] = useState(false);
+  const [preRestoreInfo, setPreRestoreInfo] = useState(() =>
+    getPreRestoreSnapshotInfo ? getPreRestoreSnapshotInfo() : null
+  );
+  const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
   const restoreFileRef = useRef(null);
+
+  // 4.1 State Firestore Sync Engine (Fase 3A: Pilot Toko Pemasok)
+  const [syncInfo, setSyncInfo] = useState(getSyncState);
+  const [isManualSyncing, setIsManualSyncing] = useState(false);
+  const [backfillPreview, setBackfillPreview] = useState(null);
+  const [isBackfilling, setIsBackfilling] = useState(false);
+  const [backfillModalOpen, setBackfillModalOpen] = useState(false);
+
+  useEffect(() => {
+    const unsub = subscribeSyncState((state) => {
+      setSyncInfo(state);
+    });
+    return () => unsub();
+  }, []);
+
+  const refreshBackfillPreview = useCallback(async () => {
+    if (!currentUser?.uid) return;
+    try {
+      const prev = await previewSupplierBackfill(stores, currentUser.uid);
+      if (prev.ok) {
+        setBackfillPreview(prev);
+      }
+    } catch (err) {
+      console.warn('Gagal memuat preview backfill:', err);
+    }
+  }, [currentUser?.uid, stores]);
+
+  useEffect(() => {
+    refreshBackfillPreview();
+  }, [refreshBackfillPreview, syncInfo.stats]);
+
+  const handleManualSync = async () => {
+    setIsManualSyncing(true);
+    try {
+      const res = await triggerSyncNow({ ownerUid: currentUser?.uid });
+      if (!res) return;
+
+      if (res.offline) {
+        pushToast('Perangkat sedang offline. Antrean akan disinkronkan saat terhubung kembali.', 'warning');
+      } else if (res.running) {
+        pushToast('Proses sinkronisasi sedang berlangsung di latar belakang.', 'info');
+      } else if (res.processedCount > 0 && res.failedCount === 0) {
+        pushToast(`Berhasil menyinkronkan ${res.processedCount} data pemasok ke cloud.`, 'success');
+      } else if (res.processedCount > 0 && res.failedCount > 0) {
+        pushToast(`Sinkronisasi parsial: ${res.processedCount} berhasil, ${res.failedCount} gagal. Periksa koneksi/database.`, 'warning');
+      } else if (res.failedCount > 0) {
+        const errDetail = res.lastError || res.error || 'Terjadi kesalahan sinkronisasi';
+        pushToast(`Gagal menyinkronkan ${res.failedCount} operasi: ${errDetail}`, 'error');
+      } else if (res.processedCount === 0 && res.failedCount === 0) {
+        pushToast('Tidak ada antrean perubahan baru untuk disinkronkan.', 'info');
+      } else {
+        pushToast(`Gagal sinkronisasi: ${res?.error || res?.reason || 'Koneksi bermasalah'}`, 'warning');
+      }
+    } catch (e) {
+      pushToast('Gagal memicu sinkronisasi: ' + e.message, 'error');
+    } finally {
+      setIsManualSyncing(false);
+      refreshBackfillPreview();
+    }
+  };
+
+  const handleExecuteBackfill = async () => {
+    if (!currentUser?.uid) {
+      pushToast('Silakan login terlebih dahulu dengan akun Google.', 'error');
+      return;
+    }
+    setIsBackfilling(true);
+    try {
+      const res = await executeSupplierBackfill(stores, currentUser.uid, {
+        operator: activeOperator,
+      });
+      if (res.ok) {
+        if (res.enqueuedCount > 0) {
+          pushToast(
+            `Berhasil memuat ${res.enqueuedCount} toko pemasok lokal ke antrean. Klik "Sinkronkan Sekarang" untuk mengirim ke cloud.`,
+            'success'
+          );
+        } else {
+          pushToast('Seluruh data toko pemasok lokal sudah berada di antrean atau tersinkron.', 'info');
+        }
+        await refreshBackfillPreview();
+        setBackfillModalOpen(false);
+      } else {
+        pushToast(`Gagal memuat ke antrean: ${res.error}`, 'error');
+      }
+    } catch (err) {
+      pushToast(`Kesalahan saat memuat backfill: ${err.message}`, 'error');
+    } finally {
+      setIsBackfilling(false);
+    }
+  };
 
   // 5. State Reset Data
   const [resetSampleOpen, setResetSampleOpen] = useState(false);
@@ -264,18 +391,59 @@ export default function Pengaturan() {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       pushToast(
-        `Cadangan berhasil diunduh (${backupSummary.products} barang, ${backupSummary.orders} pesanan).`
+        `Cadangan data v1.3.0 berhasil diunduh (${backupSummary.products} barang, ${backupSummary.orders} pesanan, ${backupSummary.stores} toko pemasok).`,
+        'success'
       );
     } catch {
       pushToast('Gagal membuat berkas cadangan.', 'error');
     }
   };
 
+  /* =========================================================================
+     OPERATOR MANAGEMENT HANDLERS
+     ========================================================================= */
+  const handleAddOperator = (e) => {
+    e.preventDefault();
+    if (!newOpName.trim()) {
+      pushToast('Nama operator tidak boleh kosong.', 'warning');
+      return;
+    }
+    const res = addOperator({ name: newOpName.trim() });
+    if (res.ok) {
+      setNewOpName('');
+      pushToast(`Operator "${res.operator.name}" berhasil ditambahkan.`);
+    } else {
+      pushToast(res.reason || 'Gagal menambahkan operator.', 'error');
+    }
+  };
+
+  const handleStartEditOp = (op) => {
+    setEditingOpId(op.id);
+    setEditingOpName(op.name);
+  };
+
+  const handleSaveEditOp = (id) => {
+    if (!editingOpName.trim()) {
+      pushToast('Nama operator tidak boleh kosong.', 'warning');
+      return;
+    }
+    const res = updateOperator(id, { name: editingOpName.trim() });
+    if (res.ok) {
+      setEditingOpId(null);
+      setEditingOpName('');
+      pushToast('Nama operator berhasil diperbarui.');
+    }
+  };
+
   const handleSaveToCloud = async () => {
+    if (!ownerUid) {
+      pushToast('Silakan login terlebih dahulu dengan akun Google.', 'error');
+      return;
+    }
     setCloudBusy(true);
     try {
       const backup = buildBackup();
-      const res = await saveBackupToCloud(backup);
+      const res = await saveBackupToCloud(backup, ownerUid);
       if (res.ok) {
         const now = new Date().toISOString();
         updateSettings({ lastCloudBackupAt: now });
@@ -291,10 +459,14 @@ export default function Pengaturan() {
   };
 
   const handleFetchFromCloud = async () => {
+    if (!ownerUid) {
+      pushToast('Silakan login terlebih dahulu dengan akun Google.', 'error');
+      return;
+    }
     setCloudBusy(true);
     setImportError('');
     try {
-      const res = await fetchBackupFromCloud();
+      const res = await fetchBackupFromCloud(ownerUid);
       if (!res.ok) {
         pushToast(res.reason || 'Gagal mengambil data dari Firebase Cloud.', 'warning');
         return;
@@ -348,7 +520,7 @@ export default function Pengaturan() {
     if (!validation.valid) return null;
     return {
       exportedAt: validation.exportedAt || null,
-      version: validation.version || '1.0',
+      version: validation.version || '1.3.0',
       storeName: validation.summary.storeName,
       stores: validation.summary.stores,
       products: validation.summary.products,
@@ -356,7 +528,12 @@ export default function Pengaturan() {
       orders: validation.summary.orders,
       movements: validation.summary.movements,
       shortages: validation.summary.shortages,
+      storePrices: validation.summary.storePrices || 0,
+      priceHistory: validation.summary.priceHistory || 0,
+      operators: validation.summary.operators || 0,
+      storeCarts: validation.summary.storeCarts || 0,
       integrity: validation.integrity,
+      warnings: validation.warnings || [],
     };
   };
 
@@ -379,9 +556,34 @@ export default function Pengaturan() {
       );
       setRestoreModalOpen(false);
       setPendingImport(null);
+      if (getPreRestoreSnapshotInfo) {
+        setPreRestoreInfo(getPreRestoreSnapshotInfo());
+      }
     } else {
       setImportError(res.reason || 'Gagal memulihkan data dari berkas.');
       pushToast(res.reason || 'Gagal memulihkan data.', 'error');
+    }
+  };
+
+  const executeRollback = () => {
+    if (!rollbackLastRestore) return;
+    setIsRollingBack(true);
+    try {
+      const res = rollbackLastRestore();
+      if (res.ok) {
+        setName(settings.name || 'Warung Madura');
+        setDescription(settings.description || '');
+        setLogo(settings.logo || '');
+        pushToast('Pemulihan berhasil dibatalkan. Seluruh data telah dikembalikan ke kondisi sebelum impor.', 'success');
+        setRollbackModalOpen(false);
+        setPreRestoreInfo(null);
+      } else {
+        pushToast(res.reason || 'Gagal membatalkan pemulihan.', 'error');
+      }
+    } catch (err) {
+      pushToast('Terjadi kesalahan saat membatalkan pemulihan: ' + err.message, 'error');
+    } finally {
+      setIsRollingBack(false);
     }
   };
 
@@ -419,6 +621,17 @@ export default function Pengaturan() {
         title="Pengaturan"
         subtitle="Pusat pengelolaan profil warung, tema tampilan, notifikasi, dan keamanan cadangan data."
       />
+
+      {/* Peringatan Kesehatan Penyimpanan Lokal (Batch 3) */}
+      {storageStatus && !storageStatus.ok && (
+        <div className="rounded-2xl border border-rose-300 bg-rose-50 p-4 text-xs text-rose-800 flex items-start gap-3 shadow-soft">
+          <AlertCircle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <strong className="text-rose-900 block font-bold">Peringatan Penyimpanan Lokal Browser</strong>
+            <p>{storageStatus.lastError?.message || 'Terjadi gangguan pada memori penyimpanan lokal browser.'}</p>
+          </div>
+        </div>
+      )}
 
       {/* =========================================================================
           1. PROFIL TOKO
@@ -535,6 +748,205 @@ export default function Pengaturan() {
                 Simpan Profil Warung
               </Btn>
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* =========================================================================
+          AKUN PEMILIK & OPERATOR WARUNG (FASE 1)
+          ========================================================================= */}
+      <section className="card p-5 sm:p-6 shadow-soft space-y-6">
+        <div className="flex items-center justify-between border-b border-line pb-3.5">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary-soft text-primary shadow-soft">
+              <Users className="h-5 w-5" />
+            </span>
+            <div>
+              <h2 className="text-base font-bold text-ink">Akun Pemilik &amp; Operator Warung</h2>
+              <p className="text-xs text-ink-soft">
+                Identitas kepemilikan data Google Auth dan operator operasional harian warung.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* 1. Profil Pemilik Google Auth */}
+        <div className="rounded-2xl border border-line bg-surface p-4 sm:p-5">
+          <div className="flex items-center justify-between pb-3 border-b border-line">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-emerald-600" />
+              <h3 className="text-sm font-bold text-ink">Akun Pemilik (Firebase Auth)</h3>
+            </div>
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 border border-emerald-200">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Terautentikasi
+            </span>
+          </div>
+
+          <div className="mt-3.5 flex flex-wrap items-center gap-4">
+            {currentUser?.photoURL ? (
+              <img
+                src={currentUser.photoURL}
+                alt="Foto Profil"
+                referrerPolicy="no-referrer"
+                className="h-12 w-12 rounded-2xl border border-line object-cover shadow-sm"
+              />
+            ) : (
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-soft text-primary font-bold text-lg">
+                <User className="h-6 w-6" />
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="font-extrabold text-sm text-ink">{currentUser?.displayName || 'Pemilik Warung'}</p>
+              <p className="text-xs text-ink-soft">{currentUser?.email || '—'}</p>
+              <p className="mt-0.5 font-mono text-[11px] text-ink-soft">
+                UID Pemilik: <span className="font-bold text-ink select-all">{ownerUid || '—'}</span>
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Daftar Operator Warung Manual */}
+        <div className="space-y-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-ink">Operator Warung (Manual)</h3>
+              <p className="text-[11px] text-ink-soft">
+                Pencatat aktivitas kasir &amp; audit operasional. Nama operator dicatat permanen di setiap mutasi.
+              </p>
+            </div>
+          </div>
+
+          {/* Form Tambah Operator */}
+          <form onSubmit={handleAddOperator} className="flex gap-2">
+            <input
+              type="text"
+              value={newOpName}
+              onChange={(e) => setNewOpName(e.target.value)}
+              placeholder="Nama operator baru (misal: Kasir 2, Budi)..."
+              className="flex-1 rounded-xl border border-line bg-white px-3.5 py-2 text-xs font-medium text-ink placeholder:text-ink-soft focus:border-primary focus:outline-none"
+            />
+            <button
+              type="submit"
+              className="flex items-center gap-1.5 rounded-xl bg-primary px-3.5 py-2 text-xs font-bold text-white shadow-soft transition hover:bg-primary-hover active:scale-95"
+            >
+              <UserPlus className="h-3.5 w-3.5" />
+              <span>Tambah</span>
+            </button>
+          </form>
+
+          {/* List Operator */}
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(Array.isArray(operators) ? operators : []).map((op) => {
+              const isActive = op.status === 'aktif';
+              const isCurrent = op.id === activeOperatorId;
+              const isEditing = op.id === editingOpId;
+
+              return (
+                <div
+                  key={op.id}
+                  className={cx(
+                    'flex items-center justify-between rounded-2xl border p-3 shadow-soft transition',
+                    isCurrent
+                      ? 'border-primary/40 bg-primary-soft/30'
+                      : 'border-line bg-white'
+                  )}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
+                    <span
+                      className={cx(
+                        'flex h-8 w-8 shrink-0 items-center justify-center rounded-xl font-bold text-xs',
+                        isCurrent
+                          ? 'bg-primary text-white'
+                          : isActive
+                          ? 'bg-primary-soft text-primary'
+                          : 'bg-neutral-100 text-neutral-400'
+                      )}
+                    >
+                      <User className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      {isEditing ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="text"
+                            value={editingOpName}
+                            onChange={(e) => setEditingOpName(e.target.value)}
+                            className="rounded-lg border border-primary px-2 py-1 text-xs font-bold text-ink w-full"
+                            autoFocus
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveEditOp(op.id)}
+                            className="rounded-lg bg-primary p-1 text-white"
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingOpId(null)}
+                            className="rounded-lg bg-neutral-200 p-1 text-ink"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <p className="truncate text-xs font-bold text-ink">{op.name}</p>
+                          {isCurrent && (
+                            <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[9px] font-bold text-primary">
+                              Bertugas
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      <p className="text-[10px] text-ink-soft">
+                        Status:{' '}
+                        <span className={isActive ? 'text-emerald-600 font-semibold' : 'text-neutral-400'}>
+                          {isActive ? 'Aktif' : 'Nonaktif'}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    {isActive && !isCurrent && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveOperatorId(op.id);
+                          pushToast(`Operator bertugas beralih ke: ${op.name}`);
+                        }}
+                        className="rounded-lg border border-line bg-white px-2 py-1 text-[10px] font-bold text-ink hover:bg-neutral-50"
+                      >
+                        Pilih
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleStartEditOp(op)}
+                      title="Ubah nama operator"
+                      className="rounded-lg p-1 text-ink-soft hover:bg-neutral-100 hover:text-ink"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleOperatorStatus(op.id)}
+                      title={isActive ? 'Nonaktifkan operator' : 'Aktifkan operator'}
+                      className={cx(
+                        'rounded-lg px-2 py-1 text-[10px] font-bold transition',
+                        isActive
+                          ? 'text-neutral-500 hover:bg-neutral-100'
+                          : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
+                      )}
+                    >
+                      {isActive ? 'Nonaktifkan' : 'Aktifkan'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>
@@ -833,6 +1245,33 @@ export default function Pengaturan() {
           </div>
         </div>
 
+        {/* Banner Snapshot Rollback Pemulihan (Batch 3) */}
+        {preRestoreInfo && (
+          <div className="mt-4 rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4 text-xs shadow-soft flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-indigo-100 text-indigo-700 shrink-0 mt-0.5">
+                <RotateCcw className="h-4 w-4" />
+              </span>
+              <div>
+                <strong className="text-indigo-950 font-bold block">Tersedia Snapshot Rollback Pemulihan</strong>
+                <p className="text-[11px] text-indigo-800 leading-snug">
+                  Snapshot tersimpan otomatis sebelum pemulihan terakhir ({formatDateTime(preRestoreInfo.timestamp)}).
+                  Anda dapat membatalkan pemulihan dan mengembalikan data sebelumnya kapan saja.
+                </p>
+              </div>
+            </div>
+            <Btn
+              size="sm"
+              variant="outline"
+              icon={RotateCcw}
+              onClick={() => setRollbackModalOpen(true)}
+              className="shrink-0 border-indigo-300 text-indigo-800 hover:bg-indigo-100"
+            >
+              Batalkan Pemulihan
+            </Btn>
+          </div>
+        )}
+
         {/* 3 Kartu Aksi: Unduh Cadangan, Pulihkan, dan Firebase Cloud */}
         <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {/* Unduh Cadangan */}
@@ -896,6 +1335,16 @@ export default function Pengaturan() {
               <p className="mt-1 text-xs text-ink-soft leading-relaxed">
                 Simpan snapshot cadangan terenkapsulasi ke Firestore cloud (Proyek: <strong className="text-ink">catatan-b7384</strong>).
               </p>
+              {ownerUid ? (
+                <div className="mt-2.5 rounded-xl bg-amber-50/70 p-2 border border-amber-200/60 text-[10px] leading-snug">
+                  <span className="font-bold text-amber-950 block truncate">Pemilik: {currentUser?.email}</span>
+                  <span className="font-mono text-ink-soft block truncate">UID: {ownerUid}</span>
+                </div>
+              ) : (
+                <p className="mt-2 text-[10px] font-semibold text-rose-600">
+                  Perlu login akun Google untuk mencadangkan ke cloud.
+                </p>
+              )}
               {settings.lastCloudBackupAt && (
                 <p className="mt-2 text-[11px] font-semibold text-emerald-600">
                   Tersimpan di cloud: {formatDateTime(settings.lastCloudBackupAt)}
@@ -908,7 +1357,7 @@ export default function Pengaturan() {
                 icon={CloudUpload}
                 variant="primary"
                 size="sm"
-                disabled={cloudBusy}
+                disabled={cloudBusy || !ownerUid}
                 onClick={handleSaveToCloud}
               >
                 {cloudBusy ? 'Menyimpan...' : 'Simpan ke Cloud'}
@@ -917,7 +1366,7 @@ export default function Pengaturan() {
                 icon={CloudDownload}
                 variant="outline"
                 size="sm"
-                disabled={cloudBusy}
+                disabled={cloudBusy || !ownerUid}
                 onClick={handleFetchFromCloud}
               >
                 Pulihkan
@@ -932,6 +1381,138 @@ export default function Pengaturan() {
             <span>{importError}</span>
           </div>
         )}
+
+        {/* Card Diagnostik Firestore Sync Engine & Antrean Offline (Fase 3A) */}
+        <div className="mt-4 rounded-2xl border border-line bg-neutral-50/70 p-4 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2.5">
+            <div className="flex items-center gap-2">
+              <Cloud className="h-4 w-4 text-primary" />
+              <span className="font-bold text-ink">Firestore Sync Engine (Fase 3A: Pilot Toko Pemasok)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {!syncInfo.isOnline ? (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                  Mode Offline
+                </span>
+              ) : syncInfo.status === SYNC_ENGINE_STATUS.SYNCING ? (
+                <span className="flex items-center gap-1 rounded-full bg-primary-soft px-2 py-0.5 text-[10px] font-bold text-primary">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Menyinkronkan...
+                </span>
+              ) : syncInfo.isLeader ? (
+                <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                  Worker Aktif (Leader Tab)
+                </span>
+              ) : (
+                <span className="rounded-full bg-neutral-200 px-2 py-0.5 text-[10px] font-bold text-ink-soft">
+                  Standby (Follower Tab)
+                </span>
+              )}
+            </div>
+          </div>
+
+          <p className="mt-2 text-[11px] text-ink-soft leading-relaxed">
+            Mesin sinkronisasi Firestore aktif untuk domain <strong>Toko Pemasok (Suppliers)</strong>.
+            Operasi lokal diamankan oleh antrean IndexedDB dan dikirim secara atomik dengan idempotensi server.
+          </p>
+
+          {/* Metrik Antrean Sinkronisasi */}
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 text-center">
+            <div className="rounded-xl border border-line bg-white p-2">
+              <span className="block text-[10px] text-ink-soft font-medium">Pending</span>
+              <strong className="text-sm font-black text-amber-600">{syncInfo.stats?.pending || 0}</strong>
+            </div>
+            <div className="rounded-xl border border-line bg-white p-2">
+              <span className="block text-[10px] text-ink-soft font-medium">Processing</span>
+              <strong className="text-sm font-black text-primary">{syncInfo.stats?.processing || 0}</strong>
+            </div>
+            <div className="rounded-xl border border-line bg-white p-2">
+              <span className="block text-[10px] text-ink-soft font-medium">Tersinkron</span>
+              <strong className="text-sm font-black text-emerald-600">{syncInfo.stats?.completed || 0}</strong>
+            </div>
+            <div className="rounded-xl border border-line bg-white p-2">
+              <span className="block text-[10px] text-ink-soft font-medium">Gagal</span>
+              <strong className="text-sm font-black text-rose-600">{syncInfo.stats?.failed || 0}</strong>
+            </div>
+          </div>
+
+          {syncInfo.lastError && (
+            <div className="mt-2.5 rounded-lg border border-rose-200 bg-rose-50 p-2 text-[11px] text-rose-700 flex items-center gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              <span>Error terakhir: {syncInfo.lastError}</span>
+            </div>
+          )}
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line/60 pt-2.5 text-[11px]">
+            <div className="flex flex-wrap items-center gap-2 text-ink-soft">
+              <span>Domain: <strong className="text-ink">Suppliers (Pilot)</strong></span>
+              <span>•</span>
+              <span>
+                Terakhir: <strong className="text-ink">
+                  {syncInfo.lastSyncAt ? formatDateTime(syncInfo.lastSyncAt) : 'Belum ada'}
+                </strong>
+              </span>
+            </div>
+
+            <Btn
+              size="xs"
+              variant="outline"
+              icon={isManualSyncing ? Loader2 : RefreshCw}
+              disabled={isManualSyncing || !syncInfo.isOnline}
+              onClick={handleManualSync}
+            >
+              {isManualSyncing ? 'Menyinkronkan...' : 'Sinkronkan Sekarang'}
+            </Btn>
+          </div>
+
+          {/* Sub-Card: Sinkronisasi Awal Data Lokal (Backfill Pilot) */}
+          <div className="mt-3.5 rounded-xl border border-line/80 bg-white p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="font-bold text-ink text-xs block">Data Pemasok Lokal (Backfill)</span>
+                <p className="text-[11px] text-ink-soft">
+                  {backfillPreview?.eligibleCount > 0 ? (
+                    <>Terdapat <strong>{backfillPreview.eligibleCount}</strong> dari {stores.length} toko lokal yang belum masuk antrean sinkronisasi.</>
+                  ) : (
+                    <>Seluruh toko pemasok lokal ({stores.length} toko) telah berada di antrean atau tersinkron.</>
+                  )}
+                </p>
+              </div>
+
+              <Btn
+                size="xs"
+                variant={backfillPreview?.eligibleCount > 0 ? 'secondary' : 'ghost'}
+                icon={isBackfilling ? Loader2 : CloudUpload}
+                disabled={isBackfilling || !currentUser || (backfillPreview && backfillPreview.eligibleCount === 0)}
+                onClick={() => setBackfillModalOpen(true)}
+              >
+                {backfillPreview?.eligibleCount > 0 ? 'Periksa & Muat Antrean' : 'Data Lokal Siap'}
+              </Btn>
+            </div>
+
+            {/* Rincian Status Backfill */}
+            {backfillPreview && (
+              <div className="mt-2.5 flex flex-wrap gap-2 text-[10px] text-ink-soft">
+                <span className="rounded-md bg-neutral-100 px-2 py-0.5 font-medium">
+                  Total Lokal: <strong className="text-ink">{backfillPreview.totalLocal}</strong>
+                </span>
+                <span className="rounded-md bg-emerald-50 px-2 py-0.5 font-medium text-emerald-800">
+                  Tersinkron: <strong>{backfillPreview.alreadySyncedCount}</strong>
+                </span>
+                <span className="rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-800">
+                  Di Antrean: <strong>{backfillPreview.alreadyQueuedCount}</strong>
+                </span>
+                <span className="rounded-md bg-primary-soft px-2 py-0.5 font-medium text-primary">
+                  Belum Antre: <strong>{backfillPreview.eligibleCount}</strong>
+                </span>
+                {backfillPreview.duplicateCount > 0 && (
+                  <span className="rounded-md bg-rose-50 px-2 py-0.5 font-medium text-rose-700">
+                    ID Duplikat: <strong>{backfillPreview.duplicateCount}</strong>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
       </section>
 
       {/* =========================================================================
@@ -1105,12 +1686,12 @@ export default function Pengaturan() {
                   </div>
                 </div>
 
-                {/* Rincian Jumlah Data */}
+                {/* Rincian Jumlah Data (10 Domain Operasional) */}
                 <div>
                   <p className="text-[11px] font-bold uppercase tracking-wider text-ink-soft mb-1.5">
                     Data yang Ditemukan di Berkas:
                   </p>
-                  <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 text-center">
                     <div className="rounded-xl border border-line bg-white p-2">
                       <span className="text-[10px] text-ink-soft">Toko Pemasok</span>
                       <p className="font-extrabold text-ink text-sm">{summary.stores}</p>
@@ -1135,21 +1716,99 @@ export default function Pengaturan() {
                       <span className="text-[10px] text-ink-soft">Kekurangan</span>
                       <p className="font-extrabold text-ink text-sm">{summary.shortages}</p>
                     </div>
+                    <div className="rounded-xl border border-line bg-white p-2">
+                      <span className="text-[10px] text-ink-soft">Harga Khusus</span>
+                      <p className="font-extrabold text-ink text-sm">{summary.storePrices}</p>
+                    </div>
+                    <div className="rounded-xl border border-line bg-white p-2">
+                      <span className="text-[10px] text-ink-soft">Riwayat Harga</span>
+                      <p className="font-extrabold text-ink text-sm">{summary.priceHistory}</p>
+                    </div>
+                    <div className="rounded-xl border border-line bg-white p-2">
+                      <span className="text-[10px] text-ink-soft">Operator</span>
+                      <p className="font-extrabold text-ink text-sm">{summary.operators}</p>
+                    </div>
+                    <div className="rounded-xl border border-line bg-white p-2">
+                      <span className="text-[10px] text-ink-soft">Keranjang Toko</span>
+                      <p className="font-extrabold text-ink text-sm">{summary.storeCarts}</p>
+                    </div>
                   </div>
                 </div>
 
+                {/* Peringatan Integritas jika ada warning */}
+                {summary.warnings && summary.warnings.length > 0 && (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-900 space-y-1">
+                    <div className="flex items-center gap-1.5 font-bold">
+                      <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+                      <span>Catatan Integritas Berkas Cadangan ({summary.warnings.length}):</span>
+                    </div>
+                    <ul className="list-disc list-inside text-[11px] text-amber-800 space-y-0.5">
+                      {summary.warnings.map((w, idx) => (
+                        <li key={idx}>{w}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Informasi Snapshot Perlindungan Rollback */}
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 p-3 text-indigo-900 flex items-start gap-2.5">
+                  <ShieldCheck className="h-5 w-5 text-indigo-600 shrink-0 mt-0.5" />
+                  <p className="leading-relaxed text-[11px]">
+                    <strong>Perlindungan Pemulihan:</strong> Sistem akan membuat snapshot otomatis dari data saat ini sebelum menimpa. Jika data yang dipulihkan tidak sesuai, Anda dapat membatalkan pemulihan melalui tombol “Batalkan Pemulihan”.
+                  </p>
+                </div>
+
                 {/* Peringatan Penggantian Data */}
-                <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-900 flex items-start gap-2.5">
-                  <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-900 flex items-start gap-2.5">
+                  <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
                   <p className="leading-relaxed">
                     <strong>PENTING:</strong> Pemulihan ini akan menggantikan seluruh catatan data
-                    yang sedang aktif saat ini dengan isi berkas cadangan. Pastikan Anda telah
-                    mengunduh cadangan terkini jika data saat ini masih diperlukan.
+                    yang sedang aktif saat ini dengan isi berkas cadangan.
                   </p>
                 </div>
               </div>
             );
           })()}
+        </Modal>
+      )}
+
+      {/* =========================================================================
+          MODAL: KONFIRMASI ROLLBACK PEMULIHAN (BATCH 3)
+          ========================================================================= */}
+      {rollbackModalOpen && preRestoreInfo && (
+        <Modal
+          open={rollbackModalOpen}
+          onClose={() => setRollbackModalOpen(false)}
+          title="Batalkan Pemulihan Terakhir (Rollback)?"
+          subtitle="Mengembalikan catatan warung tepat ke kondisi sebelum pemulihan berkas dilakukan."
+          size="sm"
+          footer={
+            <>
+              <Btn variant="ghost" onClick={() => setRollbackModalOpen(false)}>
+                Tutup
+              </Btn>
+              <Btn
+                variant="danger"
+                icon={RotateCcw}
+                disabled={isRollingBack}
+                onClick={executeRollback}
+              >
+                {isRollingBack ? 'Mengembalikan...' : 'Ya, Batalkan Pemulihan'}
+              </Btn>
+            </>
+          }
+        >
+          <div className="space-y-3 text-xs leading-relaxed">
+            <p className="text-ink">
+              Data warung saat ini akan dikembalikan ke kondisi snapshot yang tersimpan sebelum pemulihan pada:
+            </p>
+            <div className="rounded-xl border border-line bg-neutral-50 p-2.5 font-semibold text-ink">
+              {formatDateTime(preRestoreInfo.timestamp)}
+            </div>
+            <p className="text-ink-soft text-[11px]">
+              Tindakan ini akan mengembalikan seluruh data produk, toko pemasok, pesanan, dan stok fisik ke keadaan semula.
+            </p>
+          </div>
         </Modal>
       )}
 
@@ -1214,6 +1873,70 @@ export default function Pengaturan() {
                 className="font-bold uppercase text-rose-700 tracking-wider"
                 autoFocus
               />
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal Konfirmasi Backfill Pemasok Lokal */}
+      {backfillModalOpen && backfillPreview && (
+        <Modal
+          open={backfillModalOpen}
+          title="Pratinjau Backfill Toko Pemasok Lokal"
+          onClose={() => setBackfillModalOpen(false)}
+        >
+          <div className="space-y-4 text-xs">
+            <p className="text-ink-soft leading-relaxed">
+              Sistem akan memuat data toko pemasok lokal dari penyimpanan browser Anda ke dalam antrean IndexedDB
+              menggunakan identitas unik yang stabil (tanpa mengubah ID lokal atau menimpa data warung).
+            </p>
+
+            <div className="rounded-xl border border-line bg-neutral-50 p-3 space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-ink-soft">Total Toko di LocalStorage:</span>
+                <strong className="text-ink">{backfillPreview.totalLocal} toko</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink-soft">Sudah Tersinkron di Cloud:</span>
+                <strong className="text-emerald-700">{backfillPreview.alreadySyncedCount} toko</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink-soft">Sedang Berada di Antrean:</span>
+                <strong className="text-amber-700">{backfillPreview.alreadyQueuedCount} toko</strong>
+              </div>
+              <div className="flex justify-between border-t border-line/60 pt-1.5 font-bold">
+                <span className="text-ink">Akan Dimasukkan ke Antrean:</span>
+                <strong className="text-primary">{backfillPreview.eligibleCount} toko</strong>
+              </div>
+            </div>
+
+            {backfillPreview.eligibleStores.length > 0 && (
+              <div>
+                <span className="font-bold text-ink block mb-1">Daftar Toko yang Akan Dimuat:</span>
+                <ul className="max-h-36 overflow-y-auto rounded-lg border border-line bg-white p-2 divide-y divide-line/40">
+                  {backfillPreview.eligibleStores.map((st) => (
+                    <li key={st.id} className="py-1 flex justify-between items-center text-[11px]">
+                      <span className="font-semibold text-ink">{st.name}</span>
+                      <span className="font-mono text-[10px] text-ink-soft">{st.id}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-line">
+              <Btn size="sm" variant="ghost" onClick={() => setBackfillModalOpen(false)}>
+                Batal
+              </Btn>
+              <Btn
+                size="sm"
+                variant="primary"
+                icon={isBackfilling ? Loader2 : Check}
+                disabled={isBackfilling || backfillPreview.eligibleCount === 0}
+                onClick={handleExecuteBackfill}
+              >
+                {isBackfilling ? 'Memuat...' : `Muat ${backfillPreview.eligibleCount} Toko ke Antrean`}
+              </Btn>
             </div>
           </div>
         </Modal>

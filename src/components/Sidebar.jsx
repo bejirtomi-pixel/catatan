@@ -1,7 +1,8 @@
 import { NavLink } from 'react-router-dom';
-import { BarChart3, Boxes, ClipboardList, LayoutDashboard, Package, Settings, Store, X } from 'lucide-react';
+import { BarChart3, Boxes, CalendarClock, ClipboardList, LayoutDashboard, Package, Settings, Smartphone, Store, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import Logo from './Logo';
+import UserAccountCard from './UserAccountCard';
 import { cx } from './UI';
 
 export const NAV = [
@@ -10,12 +11,14 @@ export const NAV = [
   { to: '/toko', label: 'Toko', icon: Store },
   { to: '/pesanan', label: 'Pesanan', icon: ClipboardList },
   { to: '/stok', label: 'Stok', icon: Boxes },
+  { to: '/kunjungan', label: 'Kunjungan', icon: CalendarClock },
+  { to: '/catatan-digital', label: 'Catatan Digital', icon: Smartphone },
   { to: '/laporan', label: 'Laporan', icon: BarChart3 },
   { to: '/pengaturan', label: 'Pengaturan', icon: Settings },
 ];
 
 export default function Sidebar({ open, onClose }) {
-  const { settings, activeOrders } = useApp();
+  const { settings, activeOrders, visitReminders, pendingDigitalTransactions } = useApp();
   return (
     <>
       {open && (
@@ -76,29 +79,40 @@ export default function Sidebar({ open, onClose }) {
                   {activeOrders.length}
                 </span>
               )}
+              {item.to === '/kunjungan' && visitReminders && visitReminders.length > 0 && (
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-bold text-white shadow-xs">
+                  {visitReminders.length}
+                </span>
+              )}
+              {item.to === '/catatan-digital' && pendingDigitalTransactions && pendingDigitalTransactions.length > 0 && (
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white shadow-xs" title={`${pendingDigitalTransactions.length} transaksi pending`}>
+                  {pendingDigitalTransactions.length}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>
 
-        <div className="border-t border-line p-3.5">
+        <div className="border-t border-line p-3 space-y-2.5">
+          <UserAccountCard />
           <div
             className="flex items-start gap-3 rounded-2xl border border-line/60 bg-primary-soft/50 p-2.5 shadow-soft transition hover:border-primary/30"
             title={`${settings.name || 'Warung Madura'}${settings.description ? ` • ${settings.description}` : ''}`}
           >
             <Logo
               src={settings.logo}
-              boxClassName="h-10 w-10 shrink-0 rounded-xl bg-surface text-lg shadow-soft mt-0.5"
+              boxClassName="h-9 w-9 shrink-0 rounded-xl bg-surface text-base shadow-soft mt-0.5"
               alt={settings.name || 'Logo toko'}
             />
             <div className="min-w-0 flex-1">
               <p
-                className="text-xs font-extrabold text-ink leading-tight break-words line-clamp-2"
+                className="text-xs font-extrabold text-ink leading-tight break-words line-clamp-1"
                 title={settings.name || 'Warung Madura'}
               >
                 {settings.name || 'Warung Madura'}
               </p>
               <p
-                className="mt-1 text-[11px] leading-snug text-ink-soft line-clamp-2 break-words"
+                className="mt-0.5 text-[10px] leading-snug text-ink-soft line-clamp-1 break-words"
                 title={settings.description || 'Catatan Stok & Pesanan'}
               >
                 {settings.description || 'Catatan Stok & Pesanan'}

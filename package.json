@@ -6,7 +6,19 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:rules": "npx firebase-tools emulators:exec --only firestore \"node scripts/test-firestore-rules.mjs\"",
+    "test:fase1": "npx firebase-tools emulators:exec --only firestore,auth \"node scripts/test-fase1-auth.mjs\"",
+    "test:fase2": "node scripts/test-fase2-queue.mjs",
+    "test:fase3a": "npx firebase-tools emulators:exec --only firestore \"node scripts/test-fase3a-sync.mjs\"",
+    "test:backfill": "npx firebase-tools emulators:exec --only firestore \"node scripts/test-fase3a-backfill.mjs\"",
+    "test:hardening": "npx firebase-tools emulators:exec --only firestore,auth \"node scripts/test-fase3a6-hardening.mjs\"",
+    "test:failclosed": "npx firebase-tools emulators:exec --only firestore,auth \"node scripts/test-fase3a72-failclosed.mjs\"",
+    "test:batch3": "node scripts/test-batch3-data-reliability.mjs",
+    "test:batch4": "node scripts/test-batch4-core-functionality.mjs",
+    "test:batch5": "node scripts/test-batch5-visit-module.mjs",
+    "test:batch6": "node scripts/test-batch6-digital-transaction.mjs",
+    "test:batch71": "node scripts/test-batch71-readiness.mjs"
   },
   "dependencies": {
     "firebase": "^13.4.0",
@@ -17,8 +29,10 @@
     "react-router-dom": "^6.28.0"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^6.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "fake-indexeddb": "^6.2.8",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "vite": "^5.4.11"

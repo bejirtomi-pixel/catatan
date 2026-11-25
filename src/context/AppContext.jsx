@@ -1,6 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AuthContext } from './AuthContext';
+import { enqueueOperation } from '../services/offlineQueue';
+import { startSyncEngine, stopSyncEngine, triggerSyncNow } from '../services/syncEngine';
 import { buildSeed } from '../data/seed';
-import { dateCompact, dateKey, formatQty, getLocalDateString, localDateToISO, round2, uid } from '../utils/format';
+import { DEFAULT_OPERATORS, createOperatorSnapshot } from '../data/operators';
+import { addDays, computeDataChecksum, dateCompact, dateKey, formatDateId, formatQty, getDayNameId, getLocalDateString, localDateToISO, round2, uid } from '../utils/format';
+import { calculateDigitalProfit, validateDigitalTransaction, summarizeDigitalTransactions } from '../utils/digitalFinance';
+
+export { DEFAULT_OPERATORS, computeDataChecksum };
 
 const PREFIX = 'wm_v1_';
 
@@ -17,21 +24,83 @@ export const DEFAULT_NOTIFICATIONS = {
   repurchaseInDelivery: true,
 };
 
+// Pelacak status kesehatan penyimpanan lokal
+let lastStorageError = null;
+const storageListeners = new Set();
+
+export function getStorageHealth() {
+  return {
+    ok: !lastStorageError,
+    lastError: lastStorageError,
+  };
+}
+
+export function subscribeStorageHealth(listener) {
+  storageListeners.add(listener);
+  return () => storageListeners.delete(listener);
+}
+
+function notifyStorageError(errInfo) {
+  lastStorageError = errInfo;
+  storageListeners.forEach((fn) => {
+    try {
+      fn(lastStorageError);
+    } catch (_) {}
+  });
+}
+
 function load(key, fallback) {
   try {
     const raw = localStorage.getItem(PREFIX + key);
-    if (raw) return JSON.parse(raw);
-  } catch {
-    /* ignore */
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error(`[Storage Integrity] Kunci "${PREFIX + key}" mengalami kerusakan format JSON.`, err);
+    try {
+      const raw = localStorage.getItem(PREFIX + key);
+      if (raw) {
+        // Amankan data rusak ke rescue key agar data fisik tidak tertimpa/lenyap
+        const rescueKey = `${PREFIX}corrupt_rescue_${key}_${Date.now()}`;
+        localStorage.setItem(rescueKey, raw);
+        notifyStorageError({
+          key,
+          isCorrupt: true,
+          rescueKey,
+          message: `Data pada "${key}" rusak dan telah diamankan ke "${rescueKey}".`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch (_) {}
+    return fallback;
   }
-  return fallback;
 }
 
 const save = (key, data) => {
   try {
-    localStorage.setItem(PREFIX + key, JSON.stringify(data));
-  } catch {
-    /* ignore */
+    const serialized = JSON.stringify(data);
+    localStorage.setItem(PREFIX + key, serialized);
+    if (lastStorageError && lastStorageError.key === key) {
+      lastStorageError = null;
+      notifyStorageError(null);
+    }
+  } catch (err) {
+    const isQuota =
+      err &&
+      (err.name === 'QuotaExceededError' ||
+        err.code === 22 ||
+        err.code === 1014 ||
+        err.name === 'NS_ERROR_DOM_QUOTA_REACHED');
+
+    const errorDetail = {
+      key,
+      isQuota: !!isQuota,
+      message: isQuota
+        ? `Memori penyimpanan browser penuh (QuotaExceededError). Gagal menyimpan data "${key}".`
+        : `Gagal menyimpan data "${key}": ${err?.message || 'Kesalahan sistem'}`,
+      timestamp: new Date().toISOString(),
+    };
+    console.error('[Storage Error]', errorDetail);
+    notifyStorageError(errorDetail);
   }
 };
 
@@ -379,7 +448,87 @@ const migrateShortage = (s) => {
   };
 };
 
-/* ---------- Konteks ---------- */
+// Migrasi data jadwal kunjungan (Batch 5)
+const migrateVisit = (v) => {
+  if (!v || typeof v !== 'object') return null;
+  const todayStr = getLocalDateString();
+  const name = String(v.name || v.target || v.title || '').trim();
+  const agenda = String(v.agenda || v.title || '').trim();
+
+  let recType = 'none';
+  if (typeof v.recurrence === 'string') {
+    recType = ['none', 'weekly', 'biweekly'].includes(v.recurrence) ? v.recurrence : 'none';
+  } else if (v.recurrence && typeof v.recurrence === 'object') {
+    recType = ['none', 'weekly', 'biweekly'].includes(v.recurrence.type) ? v.recurrence.type : 'none';
+  }
+
+  const recObj = {
+    type: recType,
+    startDate: v.recurrence?.startDate ? String(v.recurrence.startDate).slice(0, 10) : (v.date || todayStr),
+    endDate: v.recurrence?.endDate ? String(v.recurrence.endDate).slice(0, 10) : null,
+    dayOfWeek: v.recurrence?.dayOfWeek != null ? Number(v.recurrence.dayOfWeek) : null,
+    intervalWeeks: v.recurrence?.intervalWeeks || (recType === 'biweekly' ? 2 : 1),
+  };
+
+  return {
+    id: v.id || uid('vst-'),
+    name: name || agenda,
+    target: name || agenda,
+    agenda: agenda || name,
+    title: agenda || name,
+    type: v.type || 'supplier', // 'supplier' | 'pengiriman' | 'keperluan_usaha' | 'lainnya'
+    date: v.date ? String(v.date).slice(0, 10) : todayStr,
+    time: v.time ? String(v.time).trim() : '',
+    location: v.location ? String(v.location).trim() : '',
+    notes: v.notes ? String(v.notes).trim() : '',
+    status: v.status || 'scheduled', // 'scheduled' | 'completed' | 'cancelled'
+    cancelReason: v.cancelReason ? String(v.cancelReason).trim() : '',
+    recurrence: recObj,
+    completion: v.completion && typeof v.completion === 'object' ? {
+      actualDate: v.completion.actualDate ? String(v.completion.actualDate).slice(0, 10) : '',
+      completedAt: v.completion.completedAt || '',
+      outcome: v.completion.outcome ? String(v.completion.outcome).trim() : '',
+      notes: v.completion.notes ? String(v.completion.notes).trim() : '',
+      followUp: v.completion.followUp ? String(v.completion.followUp).trim() : '',
+      nextVisitDate: v.completion.nextVisitDate ? String(v.completion.nextVisitDate).slice(0, 10) : '',
+    } : null,
+    createdAt: v.createdAt || new Date().toISOString(),
+    updatedAt: v.updatedAt || v.createdAt || new Date().toISOString(),
+  };
+};
+
+// Migrasi data transaksi layanan digital (Batch 6)
+const migrateDigitalTransaction = (t) => {
+  if (!t || typeof t !== 'object') return null;
+  const fin = calculateDigitalProfit(t);
+  const status = ['completed', 'pending', 'failed', 'cancelled'].includes(t.status)
+    ? t.status
+    : 'completed';
+  return {
+    id: t.id || uid('dtr-'),
+    type: t.type || 'pulsa',
+    customTypeName: String(t.customTypeName || '').trim(),
+    provider: String(t.provider || '').trim(),
+    destination: String(t.destination || '').trim(),
+    serviceAmount: fin.serviceAmount,
+    capital: fin.capital,
+    providerFee: fin.providerFee,
+    customerAdminFee: fin.customerAdminFee,
+    customerPaid: fin.customerPaid,
+    paymentMethod: ['cash', 'transfer', 'qris', 'ewallet', 'lainnya'].includes(t.paymentMethod)
+      ? t.paymentMethod
+      : 'cash',
+    status,
+    notes: String(t.notes || '').trim(),
+    createdAt: t.createdAt || new Date().toISOString(),
+    updatedAt: t.updatedAt || t.createdAt || new Date().toISOString(),
+    completedAt:
+      t.completedAt ||
+      (status === 'completed' ? t.updatedAt || t.createdAt || new Date().toISOString() : null),
+  };
+};
+
+/* ---------- Operator Warung Manual & Konteks ---------- */
 const AppContext = createContext(null);
 
 export function AppProvider({ children }) {
@@ -404,10 +553,59 @@ export function AppProvider({ children }) {
     load('priceHistory', []).map(migratePriceHistory).filter(Boolean)
   );
   const [settings, setSettings] = useState(() => load('settings', seed.settings));
+  const [visits, setVisits] = useState(() =>
+    (load('visits', seed.visits || []) || []).map(migrateVisit).filter(Boolean)
+  );
+  const [digitalTransactions, setDigitalTransactions] = useState(() =>
+    (load('digital_transactions', seed.digitalTransactions || []) || [])
+      .map(migrateDigitalTransaction)
+      .filter(Boolean)
+  );
   const [activityLogs, setActivityLogs] = useState(() => load('activityLogs', []));
   const [readNotifIds, setReadNotifIds] = useState(() => load('readNotifIds', []));
+  const [operators, setOperators] = useState(() => {
+    const loaded = load('operators', null);
+    if (Array.isArray(loaded) && loaded.length > 0) return loaded;
+    return DEFAULT_OPERATORS;
+  });
+  const [activeOperatorId, setActiveOperatorId] = useState(() => load('active_operator_id', 'op-ainie'));
   const [toasts, setToasts] = useState([]);
   const completedRef = useRef(new Set());
+
+  /* ---------- Toast Notification Helpers ---------- */
+  const pushToast = useCallback((message, type = 'success') => {
+    const id = Math.random().toString(36).slice(2);
+    setToasts((t) => [...t, { id, message, type }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3400);
+  }, []);
+  const dismissToast = useCallback((id) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+
+  /* ---------- Storage Health Status (Batch 3) ---------- */
+  const [storageStatus, setStorageStatus] = useState(getStorageHealth);
+  useEffect(() => {
+    return subscribeStorageHealth((err) => {
+      setStorageStatus({ ok: !err, lastError: err });
+      if (err) {
+        pushToast(err.message, 'error');
+      }
+    });
+  }, [pushToast]);
+
+  // Akses autentikasi pemilik warung secara aman (Fase 3A)
+  const authContext = useContext(AuthContext);
+  const ownerUid = authContext?.ownerUid || null;
+
+  // Siklus hidup Firestore Sync Engine (Fase 3A: Pilot Toko Pemasok)
+  useEffect(() => {
+    if (ownerUid) {
+      startSyncEngine({ ownerUid });
+    } else {
+      stopSyncEngine();
+    }
+    return () => {
+      stopSyncEngine();
+    };
+  }, [ownerUid]);
 
   useEffect(() => save('stores', stores), [stores]);
   useEffect(() => save('products', products), [products]);
@@ -420,26 +618,90 @@ export function AppProvider({ children }) {
   useEffect(() => save('settings', settings), [settings]);
   useEffect(() => save('activityLogs', activityLogs), [activityLogs]);
   useEffect(() => save('readNotifIds', readNotifIds), [readNotifIds]);
+  useEffect(() => save('operators', operators), [operators]);
+  useEffect(() => save('active_operator_id', activeOperatorId), [activeOperatorId]);
+  useEffect(() => save('visits', visits), [visits]);
+  useEffect(() => save('digital_transactions', digitalTransactions), [digitalTransactions]);
 
-  const addActivityLog = useCallback(({ title, desc, timestamp, type }) => {
-    const log = {
-      id: uid('act-'),
-      title,
-      desc,
-      timestamp: timestamp || new Date().toISOString(),
-      type: type || 'info',
+  const activeOperator = useMemo(() => {
+    const list = Array.isArray(operators) ? operators : DEFAULT_OPERATORS;
+    const found = list.find((o) => o.id === activeOperatorId && o.status === 'aktif');
+    if (found) return found;
+    const firstActive = list.find((o) => o.status === 'aktif');
+    return firstActive || { id: 'op-default', name: 'Operator Warung', status: 'aktif' };
+  }, [operators, activeOperatorId]);
+
+  const addActivityLog = useCallback(
+    ({ title, desc, timestamp, type, operator }) => {
+      const log = {
+        id: uid('act-'),
+        title,
+        desc,
+        timestamp: timestamp || new Date().toISOString(),
+        type: type || 'info',
+        operator: operator || { operatorId: activeOperator.id, operatorName: activeOperator.name },
+      };
+      setActivityLogs((prev) => [log, ...prev].slice(0, 100));
+    },
+    [activeOperator]
+  );
+
+  const addOperator = useCallback((data) => {
+    const name = String(data?.name || '').trim();
+    if (!name) return { ok: false, reason: 'Nama operator wajib diisi.' };
+    const newOp = {
+      id: uid('op-'),
+      name,
+      status: 'aktif',
+      createdAt: new Date().toISOString(),
     };
-    setActivityLogs((prev) => [log, ...prev].slice(0, 100));
+    setOperators((prev) => [...(Array.isArray(prev) ? prev : []), newOp]);
+    return { ok: true, operator: newOp };
   }, []);
+
+  const updateOperator = useCallback((id, patch) => {
+    if (!id) return { ok: false, reason: 'ID operator tidak valid.' };
+    setOperators((prev) =>
+      (Array.isArray(prev) ? prev : []).map((o) => {
+        if (o.id !== id) return o;
+        const name = patch.name !== undefined ? String(patch.name).trim() : o.name;
+        const status = patch.status !== undefined ? patch.status : o.status;
+        return {
+          ...o,
+          name: name || o.name,
+          status: status || o.status,
+          updatedAt: new Date().toISOString(),
+        };
+      })
+    );
+    return { ok: true };
+  }, []);
+
+  const toggleOperatorStatus = useCallback(
+    (id) => {
+      if (!id) return;
+      setOperators((prev) => {
+        const list = Array.isArray(prev) ? prev : [];
+        const target = list.find((o) => o.id === id);
+        if (!target) return list;
+        const nextStatus = target.status === 'aktif' ? 'nonaktif' : 'aktif';
+        // Minimal harus ada 1 operator berstatus aktif
+        if (nextStatus === 'nonaktif') {
+          const activeCount = list.filter((o) => o.status === 'aktif').length;
+          if (activeCount <= 1) {
+            pushToast('Minimal harus ada 1 operator warung yang berstatus aktif.', 'warning');
+            return list;
+          }
+        }
+        return list.map((o) =>
+          o.id === id ? { ...o, status: nextStatus, updatedAt: new Date().toISOString() } : o
+        );
+      });
+    },
+    [pushToast]
+  );
 
   /* ---------- helper ---------- */
-  const pushToast = useCallback((message, type = 'success') => {
-    const id = Math.random().toString(36).slice(2);
-    setToasts((t) => [...t, { id, message, type }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3400);
-  }, []);
-  const dismissToast = useCallback((id) => setToasts((t) => t.filter((x) => x.id !== id)), []);
-
   const storeById = useCallback((id) => (id ? stores.find((s) => s.id === id) : undefined), [stores]);
   const productById = useCallback((id) => (id ? products.find((p) => p.id === id) : undefined), [products]);
   const productsOfStore = useCallback(
@@ -575,7 +837,7 @@ export function AppProvider({ children }) {
     return next;
   }, []);
 
-  /* ---------- Toko ---------- */
+  /* ---------- Toko (Suppliers / Pemasok) ---------- */
   const createStore = useCallback(
     (input, extra = {}) => {
       const isObj = typeof input === 'object' && input !== null;
@@ -586,13 +848,15 @@ export function AppProvider({ children }) {
       const trimmed = String(name || '').trim();
       if (!trimmed) return null;
       if (stores.some((s) => s.name.toLowerCase() === trimmed.toLowerCase())) return null;
+      const nowIso = new Date().toISOString();
       const store = {
         id: uid('st-'),
         name: trimmed,
         phone: String(phone).trim(),
         address: String(address).trim(),
         note: String(note).trim(),
-        createdAt: new Date().toISOString(),
+        createdAt: nowIso,
+        updatedAt: nowIso,
       };
       setStores((prev) => [...prev, store]);
       addActivityLog({
@@ -600,9 +864,27 @@ export function AppProvider({ children }) {
         desc: `Toko “${store.name}” berhasil didaftarkan`,
         type: 'store_add',
       });
+
+      // FASE 3A: Enqueue ke Offline Queue & Picu Sinkronisasi
+      if (ownerUid) {
+        enqueueOperation({
+          operationType: 'CREATE',
+          entityType: 'suppliers',
+          entityId: store.id,
+          payload: store,
+          ownerUid,
+          operatorId: activeOperator.id,
+          operatorName: activeOperator.name,
+        }).then(() => {
+          triggerSyncNow({ ownerUid });
+        }).catch((err) => {
+          console.error('[Sync] Gagal enqueue create supplier:', err);
+        });
+      }
+
       return store;
     },
-    [stores, addActivityLog]
+    [stores, addActivityLog, ownerUid, activeOperator]
   );
 
   const updateStore = useCallback(
@@ -614,27 +896,48 @@ export function AppProvider({ children }) {
       if (stores.some((s) => s.id !== id && s.name.toLowerCase() === trimmed.toLowerCase())) {
         return { ok: false, reason: 'Nama toko sudah digunakan oleh toko lain.' };
       }
+      const nowIso = new Date().toISOString();
+      let updatedStore = null;
       setStores((prev) =>
-        prev.map((s) =>
-          s.id === id
-            ? {
-                ...s,
-                name: trimmed,
-                phone: isObj && input.phone !== undefined ? String(input.phone).trim() : s.phone || '',
-                address: isObj && input.address !== undefined ? String(input.address).trim() : s.address || '',
-                note: isObj && input.note !== undefined ? String(input.note).trim() : s.note || '',
-              }
-            : s
-        )
+        prev.map((s) => {
+          if (s.id !== id) return s;
+          updatedStore = {
+            ...s,
+            name: trimmed,
+            phone: isObj && input.phone !== undefined ? String(input.phone).trim() : s.phone || '',
+            address: isObj && input.address !== undefined ? String(input.address).trim() : s.address || '',
+            note: isObj && input.note !== undefined ? String(input.note).trim() : s.note || '',
+            updatedAt: nowIso,
+          };
+          return updatedStore;
+        })
       );
       addActivityLog({
         title: 'Toko Pemasok Diperbarui',
         desc: `Data toko “${trimmed}” berhasil diperbarui`,
         type: 'store_edit',
       });
+
+      // FASE 3A: Enqueue ke Offline Queue & Picu Sinkronisasi
+      if (ownerUid && updatedStore) {
+        enqueueOperation({
+          operationType: 'UPDATE',
+          entityType: 'suppliers',
+          entityId: id,
+          payload: updatedStore,
+          ownerUid,
+          operatorId: activeOperator.id,
+          operatorName: activeOperator.name,
+        }).then(() => {
+          triggerSyncNow({ ownerUid });
+        }).catch((err) => {
+          console.error('[Sync] Gagal enqueue update supplier:', err);
+        });
+      }
+
       return { ok: true, reason: '' };
     },
-    [stores, addActivityLog]
+    [stores, addActivityLog, ownerUid, activeOperator]
   );
 
   const deleteStore = useCallback(
@@ -656,9 +959,27 @@ export function AppProvider({ children }) {
           type: 'store_delete',
         });
       }
+
+      // FASE 3A: Enqueue ke Offline Queue & Picu Sinkronisasi
+      if (ownerUid && target) {
+        enqueueOperation({
+          operationType: 'DELETE',
+          entityType: 'suppliers',
+          entityId: id,
+          payload: { id, name: target.name },
+          ownerUid,
+          operatorId: activeOperator.id,
+          operatorName: activeOperator.name,
+        }).then(() => {
+          triggerSyncNow({ ownerUid });
+        }).catch((err) => {
+          console.error('[Sync] Gagal enqueue delete supplier:', err);
+        });
+      }
+
       return { ok: true };
     },
-    [orders, stores, addActivityLog]
+    [orders, stores, addActivityLog, ownerUid, activeOperator]
   );
 
   /* ---------- Barang ---------- */
@@ -866,7 +1187,20 @@ export function AppProvider({ children }) {
           type: 'product_edit',
         });
       }
-      setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+      setProducts((prev) =>
+        prev.map((p) => {
+          if (p.id !== id) return p;
+          const merged = { ...p, ...patch, id: p.id }; // ID dipertahankan mutlak
+          // Pastikan daftar satuan tetap valid dan memiliki satuan dasar factor 1
+          if (Array.isArray(merged.units) && merged.units.length > 0) {
+            const hasBase = merged.units.some((u) => Number(u?.factor) === 1);
+            if (!hasBase && merged.units[0]) {
+              merged.units = [{ ...merged.units[0], factor: 1 }, ...merged.units.slice(1)];
+            }
+          }
+          return merged;
+        })
+      );
     },
     [products, addActivityLog]
   );
@@ -1684,6 +2018,549 @@ export function AppProvider({ children }) {
     [shortages, recordRepurchase]
   );
 
+  /* ---------- Kunjungan (Visits & Recurrence) ---------- */
+
+  // Helper untuk menentukan status dinamis suatu kunjungan
+  const getVisitComputedStatus = useCallback((visit) => {
+    if (!visit) return 'scheduled';
+    if (visit.status === 'completed') return 'completed';
+    if (visit.status === 'cancelled') return 'cancelled';
+    const todayStr = getLocalDateString();
+    const visitDate = visit.date ? String(visit.date).slice(0, 10) : '';
+    if (visitDate < todayStr) return 'overdue';
+    if (visitDate === todayStr) return 'today';
+    return 'upcoming';
+  }, []);
+
+  // Kunjungan hari ini (terjadwal untuk tanggal hari ini)
+  const todayVisits = useMemo(() => {
+    const todayStr = getLocalDateString();
+    return visits.filter(
+      (v) => v.status === 'scheduled' && String(v.date).slice(0, 10) === todayStr
+    );
+  }, [visits]);
+
+  // Kunjungan terlambat (terjadwal tapi tanggalnya sudah lewat)
+  const overdueVisits = useMemo(() => {
+    const todayStr = getLocalDateString();
+    return visits.filter(
+      (v) => v.status === 'scheduled' && String(v.date).slice(0, 10) < todayStr
+    );
+  }, [visits]);
+
+  // Kunjungan mendatang (terjadwal untuk tanggal di masa depan)
+  const upcomingVisits = useMemo(() => {
+    const todayStr = getLocalDateString();
+    return visits.filter(
+      (v) => v.status === 'scheduled' && String(v.date).slice(0, 10) > todayStr
+    );
+  }, [visits]);
+
+  // Kunjungan yang telah selesai
+  const completedVisits = useMemo(() => {
+    return visits.filter((v) => v.status === 'completed');
+  }, [visits]);
+
+  // Kunjungan yang dibatalkan
+  const cancelledVisits = useMemo(() => {
+    return visits.filter((v) => v.status === 'cancelled');
+  }, [visits]);
+
+  // Pengingat aktif (gabungan kunjungan hari ini dan kunjungan yang terlambat)
+  const visitReminders = useMemo(() => {
+    return [...todayVisits, ...overdueVisits];
+  }, [todayVisits, overdueVisits]);
+
+  // Buat jadwal kunjungan baru
+  const createVisit = useCallback(
+    (data) => {
+      const name = String(data?.name || data?.target || data?.title || '').trim();
+      const agenda = String(data?.agenda || data?.title || '').trim();
+      if (!name && !agenda) {
+        return { ok: false, reason: 'Nama pihak / agenda kunjungan wajib diisi.' };
+      }
+      const rawDate = data?.date ? String(data.date).slice(0, 10) : '';
+      if (!rawDate || !/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+        return { ok: false, reason: 'Tanggal kunjungan wajib diisi dengan format YYYY-MM-DD.' };
+      }
+
+      let recType = 'none';
+      if (typeof data?.recurrence === 'string') {
+        recType = ['none', 'weekly', 'biweekly'].includes(data.recurrence) ? data.recurrence : 'none';
+      } else if (data?.recurrence?.type) {
+        recType = ['none', 'weekly', 'biweekly'].includes(data.recurrence.type) ? data.recurrence.type : 'none';
+      }
+
+      const recurrence = {
+        type: recType,
+        startDate: data?.recurrence?.startDate ? String(data.recurrence.startDate).slice(0, 10) : rawDate,
+        endDate: data?.recurrence?.endDate ? String(data.recurrence.endDate).slice(0, 10) : null,
+        dayOfWeek: data?.recurrence?.dayOfWeek != null ? Number(data.recurrence.dayOfWeek) : null,
+        intervalWeeks: recType === 'biweekly' ? 2 : recType === 'weekly' ? 1 : 0,
+      };
+
+      const now = new Date().toISOString();
+      const newVisit = {
+        id: data.id || uid('vst-'),
+        name: name || agenda,
+        target: name || agenda,
+        agenda: agenda || name,
+        title: agenda || name,
+        type: data.type || 'supplier',
+        date: rawDate,
+        time: data.time ? String(data.time).trim() : '',
+        location: data.location ? String(data.location).trim() : '',
+        notes: data.notes ? String(data.notes).trim() : '',
+        status: 'scheduled',
+        cancelReason: '',
+        recurrence,
+        completion: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      setVisits((prev) => [newVisit, ...prev]);
+
+      addActivityLog({
+        title: 'Jadwal Kunjungan Dibuat',
+        desc: `${newVisit.name} (${newVisit.date}${newVisit.time ? ' ' + newVisit.time : ''})${recType !== 'none' ? ' • Berulang ' + (recType === 'weekly' ? 'Mingguan' : '2 Mingguan') : ''}`,
+        type: 'visit_created',
+        timestamp: now,
+      });
+
+      pushToast(`Jadwal kunjungan “${newVisit.name}” berhasil ditambahkan`);
+      return { ok: true, visit: newVisit };
+    },
+    [addActivityLog, pushToast]
+  );
+
+  // Edit / perbarui rincian jadwal kunjungan
+  const updateVisit = useCallback(
+    (id, updates) => {
+      const target = visits.find((v) => v.id === id);
+      if (!target) return { ok: false, reason: 'Kunjungan tidak ditemukan.' };
+
+      if (updates.name !== undefined) {
+        const name = String(updates.name).trim();
+        if (!name) return { ok: false, reason: 'Nama pihak / kunjungan tidak boleh kosong.' };
+      }
+      if (updates.date !== undefined) {
+        const d = String(updates.date).slice(0, 10);
+        if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+          return { ok: false, reason: 'Format tanggal kunjungan tidak valid.' };
+        }
+      }
+
+      const now = new Date().toISOString();
+      let updatedVisit = null;
+
+      setVisits((prev) =>
+        prev.map((v) => {
+          if (v.id !== id) return v;
+          updatedVisit = {
+            ...v,
+            ...updates,
+            name: updates.name !== undefined ? String(updates.name).trim() : v.name,
+            date: updates.date !== undefined ? String(updates.date).slice(0, 10) : v.date,
+            time: updates.time !== undefined ? String(updates.time).trim() : v.time,
+            location: updates.location !== undefined ? String(updates.location).trim() : v.location,
+            agenda: updates.agenda !== undefined ? String(updates.agenda).trim() : v.agenda,
+            notes: updates.notes !== undefined ? String(updates.notes).trim() : v.notes,
+            type: updates.type || v.type,
+            recurrence: updates.recurrence ? { ...v.recurrence, ...updates.recurrence } : v.recurrence,
+            updatedAt: now,
+          };
+          return updatedVisit;
+        })
+      );
+
+      pushToast(`Jadwal kunjungan “${updatedVisit?.name || target.name}” berhasil diperbarui`);
+      return { ok: true, visit: updatedVisit };
+    },
+    [visits, pushToast]
+  );
+
+  // Selesaikan kunjungan & catat hasil kunjungan + otomasi jadwal berikutnya jika berulang
+  const completeVisit = useCallback(
+    (id, { actualDate, outcome = '', notes = '', followUp = '', nextVisitDate = '' } = {}) => {
+      const target = visits.find((v) => v.id === id);
+      if (!target) return { ok: false, reason: 'Kunjungan tidak ditemukan.' };
+      if (target.status === 'completed') {
+        return { ok: false, reason: 'Kunjungan ini sudah diselesaikan sebelumnya.' };
+      }
+
+      const now = new Date().toISOString();
+      const completion = {
+        actualDate: actualDate ? String(actualDate).slice(0, 10) : getLocalDateString(),
+        completedAt: now,
+        outcome: String(outcome || '').trim(),
+        notes: String(notes || '').trim(),
+        followUp: String(followUp || '').trim(),
+        nextVisitDate: nextVisitDate ? String(nextVisitDate).slice(0, 10) : '',
+      };
+
+      // Cek apakah ada jadwal pengulangan otomatis
+      const recType = target.recurrence?.type || 'none';
+      let nextVisitInstance = null;
+
+      if (recType === 'weekly' || recType === 'biweekly') {
+        const intervalDays = recType === 'biweekly' ? 14 : 7;
+        const computedNextDate = addDays(target.date, intervalDays);
+        const resolvedNextDate = completion.nextVisitDate || computedNextDate;
+
+        const isAllowedByEnd =
+          !target.recurrence?.endDate || resolvedNextDate <= target.recurrence.endDate;
+
+        if (isAllowedByEnd) {
+          nextVisitInstance = {
+            id: uid('vst-'),
+            name: target.name,
+            type: target.type,
+            date: resolvedNextDate,
+            time: target.time,
+            location: target.location,
+            agenda: completion.followUp ? `Tindak Lanjut: ${completion.followUp}` : target.agenda,
+            notes: `Jadwal lanjutan (${recType === 'weekly' ? 'Mingguan' : 'Dua Mingguan'}). Hasil sebelumnya: "${completion.outcome || 'Selesai'}"`,
+            status: 'scheduled',
+            cancelReason: '',
+            recurrence: {
+              ...target.recurrence,
+              startDate: resolvedNextDate,
+            },
+            completion: null,
+            createdAt: now,
+            updatedAt: now,
+          };
+        }
+      } else if (completion.nextVisitDate) {
+        // Jika tidak berulang tapi pengguna memasukkan nextVisitDate secara manual
+        nextVisitInstance = {
+          id: uid('vst-'),
+          name: target.name,
+          type: target.type,
+          date: completion.nextVisitDate,
+          time: target.time,
+          location: target.location,
+          agenda: completion.followUp ? `Tindak Lanjut: ${completion.followUp}` : `Kunjungan lanjutan ${target.name}`,
+          notes: `Rencana kunjungan berikutnya dari hasil evaluasi: "${completion.outcome || 'Selesai'}"`,
+          status: 'scheduled',
+          cancelReason: '',
+          recurrence: { type: 'none', startDate: completion.nextVisitDate, endDate: null },
+          completion: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+      }
+
+      setVisits((prev) => {
+        const updatedList = prev.map((v) => {
+          if (v.id !== id) return v;
+          return {
+            ...v,
+            status: 'completed',
+            completion,
+            updatedAt: now,
+          };
+        });
+
+        if (nextVisitInstance) {
+          return [nextVisitInstance, ...updatedList];
+        }
+        return updatedList;
+      });
+
+      addActivityLog({
+        title: 'Kunjungan Telah Selesai',
+        desc: `${target.name}: ${completion.outcome || 'Kunjungan telah dilaksanakan.'}${nextVisitInstance ? ` (Jadwal berikutnya: ${nextVisitInstance.date})` : ''}`,
+        type: 'visit_completed',
+        timestamp: now,
+      });
+
+      pushToast(`Kunjungan “${target.name}” telah ditandai selesai`);
+      return { ok: true, completedId: id, nextVisit: nextVisitInstance };
+    },
+    [visits, addActivityLog, pushToast]
+  );
+
+  // Batalkan kunjungan
+  const cancelVisit = useCallback(
+    (id, reason = '') => {
+      const target = visits.find((v) => v.id === id);
+      if (!target) return { ok: false, reason: 'Kunjungan tidak ditemukan.' };
+
+      const now = new Date().toISOString();
+      setVisits((prev) =>
+        prev.map((v) => {
+          if (v.id !== id) return v;
+          return {
+            ...v,
+            status: 'cancelled',
+            cancelReason: String(reason || 'Dibatalkan').trim(),
+            updatedAt: now,
+          };
+        })
+      );
+
+      addActivityLog({
+        title: 'Kunjungan Dibatalkan',
+        desc: `${target.name}: ${reason || 'Dibatalkan oleh pengguna.'}`,
+        type: 'visit_cancelled',
+        timestamp: now,
+      });
+
+      pushToast(`Kunjungan “${target.name}” telah dibatalkan`);
+      return { ok: true };
+    },
+    [visits, addActivityLog, pushToast]
+  );
+
+  // Jadwalkan ulang (Reschedule)
+  const rescheduleVisit = useCallback(
+    (id, { newDate, newTime, reason = '' } = {}) => {
+      const target = visits.find((v) => v.id === id);
+      if (!target) return { ok: false, reason: 'Kunjungan tidak ditemukan.' };
+
+      const d = String(newDate || '').slice(0, 10);
+      if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+        return { ok: false, reason: 'Tanggal penjadwalan ulang tidak valid.' };
+      }
+
+      const now = new Date().toISOString();
+      const oldDate = target.date;
+      const rescheduleNote = reason
+        ? `Dijadwalkan ulang dari ${oldDate}: ${reason}`
+        : `Dijadwalkan ulang dari ${oldDate}`;
+
+      setVisits((prev) =>
+        prev.map((v) => {
+          if (v.id !== id) return v;
+          return {
+            ...v,
+            date: d,
+            time: newTime !== undefined ? String(newTime).trim() : v.time,
+            notes: v.notes ? `${v.notes} • ${rescheduleNote}` : rescheduleNote,
+            status: 'scheduled',
+            updatedAt: now,
+          };
+        })
+      );
+
+      addActivityLog({
+        title: 'Kunjungan Dijadwalkan Ulang',
+        desc: `${target.name}: ${oldDate} → ${d}${reason ? ` (${reason})` : ''}`,
+        type: 'visit_rescheduled',
+        timestamp: now,
+      });
+
+      pushToast(`Kunjungan “${target.name}” berhasil dijadwalkan ulang ke ${d}`);
+      return { ok: true, newDate: d };
+    },
+    [visits, addActivityLog, pushToast]
+  );
+
+  // Hapus kunjungan secara permanen
+  const deleteVisit = useCallback(
+    (id) => {
+      const target = visits.find((v) => v.id === id);
+      if (!target) return { ok: false, reason: 'Kunjungan tidak ditemukan.' };
+
+      setVisits((prev) => prev.filter((v) => v.id !== id));
+
+      addActivityLog({
+        title: 'Kunjungan Dihapus',
+        desc: `Jadwal kunjungan ${target.name} (${target.date}) telah dihapus.`,
+        type: 'visit_deleted',
+        timestamp: new Date().toISOString(),
+      });
+
+      pushToast(`Jadwal kunjungan “${target.name}” telah dihapus`);
+      return { ok: true };
+    },
+    [visits, addActivityLog, pushToast]
+  );
+
+  /* ---------- Catatan Transaksi Layanan Digital (Batch 6) ---------- */
+
+  // Ringkasan metrik keuangan seluruh transaksi digital
+  const digitalSummary = useMemo(() => {
+    return summarizeDigitalTransactions(digitalTransactions);
+  }, [digitalTransactions]);
+
+  // Transaksi digital hari ini
+  const todayDigitalTransactions = useMemo(() => {
+    const todayStr = getLocalDateString();
+    return digitalTransactions.filter(
+      (t) => (t.createdAt || '').slice(0, 10) === todayStr
+    );
+  }, [digitalTransactions]);
+
+  // Ringkasan keuangan transaksi digital hari ini
+  const todayDigitalSummary = useMemo(() => {
+    return summarizeDigitalTransactions(todayDigitalTransactions);
+  }, [todayDigitalTransactions]);
+
+  // Transaksi digital yang berstatus pending (menunggu diproses/selesai)
+  const pendingDigitalTransactions = useMemo(() => {
+    return digitalTransactions.filter((t) => t.status === 'pending');
+  }, [digitalTransactions]);
+
+  // Buat transaksi digital baru
+  const createDigitalTransaction = useCallback(
+    (data) => {
+      const val = validateDigitalTransaction(data);
+      if (!val.ok) {
+        return { ok: false, reason: val.reason };
+      }
+
+      const fin = calculateDigitalProfit(data);
+      const now = new Date().toISOString();
+      const status = ['completed', 'pending', 'failed', 'cancelled'].includes(data.status)
+        ? data.status
+        : 'completed';
+
+      const newTx = {
+        id: data.id || uid('dtr-'),
+        type: data.type || 'pulsa',
+        customTypeName: String(data.customTypeName || '').trim(),
+        provider: String(data.provider || '').trim(),
+        destination: String(data.destination || '').trim(),
+        serviceAmount: fin.serviceAmount,
+        capital: fin.capital,
+        providerFee: fin.providerFee,
+        customerAdminFee: fin.customerAdminFee,
+        customerPaid: fin.customerPaid,
+        paymentMethod: ['cash', 'transfer', 'qris', 'ewallet', 'lainnya'].includes(data.paymentMethod)
+          ? data.paymentMethod
+          : 'cash',
+        status,
+        notes: String(data.notes || '').trim(),
+        createdAt: data.createdAt || now,
+        updatedAt: now,
+        completedAt: status === 'completed' ? now : null,
+      };
+
+      setDigitalTransactions((prev) => [newTx, ...prev]);
+
+      addActivityLog({
+        title: 'Transaksi Digital Dicatat',
+        desc: `${newTx.provider || newTx.type} ${rupiah(newTx.serviceAmount)} • ${status === 'completed' ? 'Selesai (Laba ' + rupiah(fin.profit) + ')' : status}`,
+        type: 'digital_tx_created',
+        timestamp: now,
+      });
+
+      pushToast(`Transaksi digital ${newTx.provider || newTx.type} berhasil dicatat`);
+      return { ok: true, transaction: newTx };
+    },
+    [addActivityLog, pushToast]
+  );
+
+  // Perbarui transaksi digital
+  const updateDigitalTransaction = useCallback(
+    (id, updates) => {
+      const target = digitalTransactions.find((t) => t.id === id);
+      if (!target) return { ok: false, reason: 'Transaksi digital tidak ditemukan.' };
+
+      const merged = { ...target, ...updates };
+      const val = validateDigitalTransaction(merged);
+      if (!val.ok) {
+        return { ok: false, reason: val.reason };
+      }
+
+      const fin = calculateDigitalProfit(merged);
+      const now = new Date().toISOString();
+      const newStatus = updates.status || target.status;
+      const completedAt =
+        newStatus === 'completed'
+          ? target.completedAt || now
+          : null;
+
+      let updatedTx = null;
+      setDigitalTransactions((prev) =>
+        prev.map((t) => {
+          if (t.id !== id) return t;
+          updatedTx = {
+            ...t,
+            ...updates,
+            serviceAmount: fin.serviceAmount,
+            capital: fin.capital,
+            providerFee: fin.providerFee,
+            customerAdminFee: fin.customerAdminFee,
+            customerPaid: fin.customerPaid,
+            status: newStatus,
+            updatedAt: now,
+            completedAt,
+          };
+          return updatedTx;
+        })
+      );
+
+      pushToast(`Transaksi digital berhasil diperbarui`);
+      return { ok: true, transaction: updatedTx };
+    },
+    [digitalTransactions, pushToast]
+  );
+
+  // Hapus transaksi digital
+  const deleteDigitalTransaction = useCallback(
+    (id) => {
+      const target = digitalTransactions.find((t) => t.id === id);
+      if (!target) return { ok: false, reason: 'Transaksi digital tidak ditemukan.' };
+
+      setDigitalTransactions((prev) => prev.filter((t) => t.id !== id));
+
+      addActivityLog({
+        title: 'Transaksi Digital Dihapus',
+        desc: `Transaksi ${target.provider || target.type} ${rupiah(target.serviceAmount)} dihapus.`,
+        type: 'digital_tx_deleted',
+        timestamp: new Date().toISOString(),
+      });
+
+      pushToast(`Transaksi digital berhasil dihapus`);
+      return { ok: true };
+    },
+    [digitalTransactions, addActivityLog, pushToast]
+  );
+
+  // Ubah status transaksi digital (completed, pending, failed, cancelled)
+  const changeDigitalTransactionStatus = useCallback(
+    (id, newStatus, reason = '') => {
+      const target = digitalTransactions.find((t) => t.id === id);
+      if (!target) return { ok: false, reason: 'Transaksi digital tidak ditemukan.' };
+      if (!['completed', 'pending', 'failed', 'cancelled'].includes(newStatus)) {
+        return { ok: false, reason: 'Status transaksi tidak valid.' };
+      }
+
+      const now = new Date().toISOString();
+      const completedAt = newStatus === 'completed' ? target.completedAt || now : null;
+
+      let updatedTx = null;
+      setDigitalTransactions((prev) =>
+        prev.map((t) => {
+          if (t.id !== id) return t;
+          updatedTx = {
+            ...t,
+            status: newStatus,
+            notes: reason ? `${t.notes ? t.notes + ' • ' : ''}[Status ${newStatus}: ${reason}]` : t.notes,
+            updatedAt: now,
+            completedAt,
+          };
+          return updatedTx;
+        })
+      );
+
+      addActivityLog({
+        title: `Status Transaksi Digital: ${newStatus}`,
+        desc: `${target.provider || target.type}: status diubah menjadi ${newStatus}.`,
+        type: 'digital_tx_status_changed',
+        timestamp: now,
+      });
+
+      pushToast(`Status transaksi diubah menjadi ${newStatus}`);
+      return { ok: true, transaction: updatedTx };
+    },
+    [digitalTransactions, addActivityLog, pushToast]
+  );
+
   const updateSettings = useCallback((patch) => {
     setSettings((prev) => ({ ...prev, ...patch }));
   }, []);
@@ -1705,9 +2582,13 @@ export function AppProvider({ children }) {
     setMovements(seed.movements);
     setShortages(seed.shortages);
     setPriceHistory([]);
+    setVisits((seed.visits || []).map(migrateVisit).filter(Boolean));
+    setDigitalTransactions((seed.digitalTransactions || []).map(migrateDigitalTransaction).filter(Boolean));
     setSettings(seed.settings);
     setActivityLogs([]);
     setReadNotifIds([]);
+    setOperators(DEFAULT_OPERATORS);
+    setActiveOperatorId('op-ainie');
   }, [seed]);
 
   const clearAllData = useCallback(() => {
@@ -1727,21 +2608,25 @@ export function AppProvider({ children }) {
     setMovements([]);
     setShortages([]);
     setPriceHistory([]);
+    setVisits([]);
+    setDigitalTransactions([]);
     setActivityLogs([]);
     setReadNotifIds([]);
-    setSettings((prev) => ({
-      ...seed.settings,
-      theme: prev.theme || 'soft-pink',
-    }));
-  }, [seed]);
+    setOperators(DEFAULT_OPERATORS);
+    setActiveOperatorId('op-ainie');
+  }, []);
 
   /* ---------- Cadangan (ekspor & impor) ---------- */
   const buildBackup = useCallback(
-    () => ({
-      app: 'catatan-warung-madura',
-      version: '1.2.0',
-      exportedAt: new Date().toISOString(),
-      data: {
+    () => {
+      const nowIso = new Date().toISOString();
+      let storeCarts = {};
+      try {
+        const rawCarts = localStorage.getItem('wm_v1_store_carts');
+        if (rawCarts) storeCarts = JSON.parse(rawCarts);
+      } catch (_) {}
+
+      const backupData = {
         stores,
         products,
         orders,
@@ -1752,9 +2637,68 @@ export function AppProvider({ children }) {
         priceHistory,
         settings,
         activityLogs,
-      },
-    }),
-    [stores, products, orders, storePrices, stocks, movements, shortages, priceHistory, settings, activityLogs]
+        operators,
+        activeOperatorId,
+        readNotifIds,
+        storeCarts,
+        visits,
+        digitalTransactions,
+      };
+
+      const totalEntities =
+        (Array.isArray(stores) ? stores.length : 0) +
+        (Array.isArray(products) ? products.length : 0) +
+        (Array.isArray(orders) ? orders.length : 0) +
+        (Array.isArray(stocks) ? stocks.length : 0) +
+        (Array.isArray(movements) ? movements.length : 0) +
+        (Array.isArray(shortages) ? shortages.length : 0) +
+        (Array.isArray(storePrices) ? storePrices.length : 0) +
+        (Array.isArray(priceHistory) ? priceHistory.length : 0) +
+        (Array.isArray(operators) ? operators.length : 0);
+
+      const checksum = computeDataChecksum({
+        storeCount: stores.length,
+        productCount: products.length,
+        orderCount: orders.length,
+        stockCount: stocks.length,
+        storePriceCount: storePrices.length,
+        firstStoreId: stores[0]?.id || '',
+        firstProductId: products[0]?.id || '',
+      });
+
+      return {
+        app: 'catatan-warung-madura',
+        version: '1.3.0',
+        exportedAt: nowIso,
+        metadata: {
+          schemaVersion: '1.3.0',
+          appName: 'Catatan Warung Madura',
+          exportedBy: activeOperator?.name || 'Operator Warung',
+          operatorId: activeOperatorId,
+          totalEntities,
+          checksum,
+        },
+        data: backupData,
+      };
+    },
+    [
+      stores,
+      products,
+      orders,
+      storePrices,
+      stocks,
+      movements,
+      shortages,
+      priceHistory,
+      settings,
+      activityLogs,
+      operators,
+      activeOperatorId,
+      readNotifIds,
+      activeOperator,
+      visits,
+      digitalTransactions,
+    ]
   );
 
   const validateBackup = useCallback((payload) => {
@@ -1764,11 +2708,14 @@ export function AppProvider({ children }) {
     const isAppMatch = payload.app === 'catatan-warung-madura' || payload.app === 'warung-madura';
     const d = payload.data && typeof payload.data === 'object' ? payload.data : payload;
 
+    const warnings = [];
+
     // 1. Validasi Toko Pemasok (stores)
     if (!Array.isArray(d.stores)) {
       return { ok: false, valid: false, reason: 'Data toko pemasok (stores) tidak ditemukan atau tidak berformat array.' };
     }
     const storeIds = new Set();
+    const duplicateStoreIds = new Set();
     for (let i = 0; i < d.stores.length; i++) {
       const s = d.stores[i];
       if (!s || typeof s !== 'object' || !s.id || typeof s.name !== 'string' || !s.name.trim()) {
@@ -1778,7 +2725,13 @@ export function AppProvider({ children }) {
           reason: `Data toko pemasok pada baris #${i + 1} tidak valid (wajib memiliki ID dan nama).`,
         };
       }
+      if (storeIds.has(s.id)) {
+        duplicateStoreIds.add(s.id);
+      }
       storeIds.add(s.id);
+    }
+    if (duplicateStoreIds.size > 0) {
+      warnings.push(`Ditemukan ${duplicateStoreIds.size} ID toko pemasok yang terduplikasi di berkas cadangan.`);
     }
 
     // 2. Validasi Master Barang (products) & Satuan (units)
@@ -1786,7 +2739,7 @@ export function AppProvider({ children }) {
       return { ok: false, valid: false, reason: 'Data master barang (products) tidak ditemukan atau tidak berformat array.' };
     }
     const productIds = new Set();
-    const productUnitsMap = new Map();
+    const duplicateProductIds = new Set();
     for (let i = 0; i < d.products.length; i++) {
       const p = d.products[i];
       if (!p || typeof p !== 'object' || !p.id || typeof p.name !== 'string' || !p.name.trim()) {
@@ -1796,6 +2749,11 @@ export function AppProvider({ children }) {
           reason: `Data barang pada baris #${i + 1} tidak valid (wajib memiliki ID dan nama).`,
         };
       }
+      if (productIds.has(p.id)) {
+        duplicateProductIds.add(p.id);
+      }
+      productIds.add(p.id);
+
       if (!Array.isArray(p.units) || p.units.length === 0) {
         return {
           ok: false,
@@ -1811,11 +2769,10 @@ export function AppProvider({ children }) {
           reason: `Barang “${p.name}” tidak memiliki satuan dasar dengan faktor konversi 1.`,
         };
       }
-      productIds.add(p.id);
-      productUnitsMap.set(p.id, new Set(p.units.map((u) => u.id)));
     }
-
-    const warnings = [];
+    if (duplicateProductIds.size > 0) {
+      warnings.push(`Ditemukan ${duplicateProductIds.size} ID barang yang terduplikasi di berkas cadangan.`);
+    }
 
     // 3. Validasi Stok Inventaris (stocks)
     if (d.stocks != null) {
@@ -1904,6 +2861,29 @@ export function AppProvider({ children }) {
       }
     }
 
+    // 7. Validasi Operators
+    if (d.operators != null) {
+      if (!Array.isArray(d.operators)) {
+        return { ok: false, valid: false, reason: 'Data operator tidak berformat array.' };
+      }
+    }
+
+    // 8. Validasi Checksum (jika ada pada metadata)
+    if (payload.metadata && payload.metadata.checksum) {
+      const expectedChecksum = computeDataChecksum({
+        storeCount: d.stores.length,
+        productCount: d.products.length,
+        orderCount: Array.isArray(d.orders) ? d.orders.length : 0,
+        stockCount: Array.isArray(d.stocks) ? d.stocks.length : 0,
+        storePriceCount: Array.isArray(d.storePrices) ? d.storePrices.length : 0,
+        firstStoreId: d.stores[0]?.id || '',
+        firstProductId: d.products[0]?.id || '',
+      });
+      if (expectedChecksum !== payload.metadata.checksum) {
+        warnings.push('Metadata checksum berkas cadangan berbeda dengan struktur data. Kemungkinan berkas telah dimodifikasi secara manual.');
+      }
+    }
+
     const summary = {
       storeName: (d.settings && d.settings.name) || 'Warung Madura',
       stores: d.stores.length,
@@ -1912,6 +2892,10 @@ export function AppProvider({ children }) {
       stocks: Array.isArray(d.stocks) ? d.stocks.length : 0,
       shortages: Array.isArray(d.shortages) ? d.shortages.length : 0,
       movements: Array.isArray(d.movements) ? d.movements.length : 0,
+      storePrices: Array.isArray(d.storePrices) ? d.storePrices.length : 0,
+      priceHistory: Array.isArray(d.priceHistory) ? d.priceHistory.length : 0,
+      operators: Array.isArray(d.operators) ? d.operators.length : 0,
+      storeCarts: d.storeCarts && typeof d.storeCarts === 'object' ? Object.keys(d.storeCarts).length : 0,
     };
 
     return {
@@ -1921,7 +2905,7 @@ export function AppProvider({ children }) {
       integrity: warnings.length > 0 ? 'warning' : 'valid',
       warnings,
       exportedAt: payload.exportedAt || null,
-      version: payload.version || '1.2.0',
+      version: payload.version || payload.metadata?.schemaVersion || '1.2.0',
       isOfficialApp: isAppMatch,
       validatedData: d,
     };
@@ -1949,13 +2933,20 @@ export function AppProvider({ children }) {
         : [];
       const nextSettings = d.settings && typeof d.settings === 'object' ? d.settings : settings;
       const nextActivityLogs = Array.isArray(d.activityLogs) ? d.activityLogs : [];
+      const nextOperators = Array.isArray(d.operators) && d.operators.length > 0 ? d.operators : operators;
+      const nextActiveOpId = d.activeOperatorId || activeOperatorId;
+      const nextStoreCarts = d.storeCarts && typeof d.storeCarts === 'object' ? d.storeCarts : null;
+      const nextVisits = Array.isArray(d.visits) ? d.visits.map(migrateVisit).filter(Boolean) : visits;
+      const nextDigital = Array.isArray(d.digitalTransactions)
+        ? d.digitalTransactions.map(migrateDigitalTransaction).filter(Boolean)
+        : digitalTransactions;
 
-      // Snapshot data localStorage saat ini untuk atomic rollback jika terjadi kegagalan tulis
+      // Ambil snapshot data localStorage saat ini untuk atomic rollback dan persistent restore rollback
       const snapshot = {};
       try {
         for (let i = 0; i < localStorage.length; i++) {
           const k = localStorage.key(i);
-          if (k && k.startsWith(PREFIX)) {
+          if (k && (k.startsWith(PREFIX) || k === 'wm_v1_store_carts')) {
             snapshot[k] = localStorage.getItem(k);
           }
         }
@@ -1963,7 +2954,21 @@ export function AppProvider({ children }) {
         /* ignore */
       }
 
-      // Validasi penulisan ke localStorage terlebih dahulu sebelum mengubah state React
+      // Simpan persistent pre-restore snapshot ke localStorage agar pengguna bisa melakukan "Rollback Pemulihan"
+      const preRestoreRecord = {
+        timestamp: new Date().toISOString(),
+        version: '1.3.0',
+        metadata: {
+          storeName: settings.name || 'Warung Madura',
+          stores: stores.length,
+          products: products.length,
+          orders: orders.length,
+          stocks: stocks.length,
+        },
+        snapshot,
+      };
+
+      // Validasi penulisan ke localStorage terlebih dahulu sebelum mengubah state React (Atomic Commit)
       try {
         save('stores', nextStores);
         save('products', nextProducts);
@@ -1976,10 +2981,30 @@ export function AppProvider({ children }) {
         save('settings', nextSettings);
         save('activityLogs', nextActivityLogs);
         save('readNotifIds', []);
+        save('operators', nextOperators);
+        save('active_operator_id', nextActiveOpId);
+        if (Array.isArray(d.visits)) {
+          save('visits', nextVisits);
+        }
+        if (Array.isArray(d.digitalTransactions)) {
+          save('digital_transactions', nextDigital);
+        }
+        if (nextStoreCarts !== null) {
+          localStorage.setItem('wm_v1_store_carts', JSON.stringify(nextStoreCarts));
+        }
+
+        // Simpan persistent snapshot setelah penulisan data utama berhasil
+        localStorage.setItem(PREFIX + 'prerestore_snapshot', JSON.stringify(preRestoreRecord));
       } catch (err) {
         // Rollback atomik ke data sebelumnya jika gagal menulis ke localStorage
         try {
-          Object.keys(snapshot).forEach((k) => localStorage.setItem(k, snapshot[k]));
+          Object.keys(snapshot).forEach((k) => {
+            if (snapshot[k] !== null && snapshot[k] !== undefined) {
+              localStorage.setItem(k, snapshot[k]);
+            } else {
+              localStorage.removeItem(k);
+            }
+          });
         } catch {
           /* ignore */
         }
@@ -2001,6 +3026,14 @@ export function AppProvider({ children }) {
       setSettings(nextSettings);
       setActivityLogs(nextActivityLogs);
       setReadNotifIds([]);
+      setOperators(nextOperators);
+      setActiveOperatorId(nextActiveOpId);
+      if (Array.isArray(d.visits)) {
+        setVisits(nextVisits);
+      }
+      if (Array.isArray(d.digitalTransactions)) {
+        setDigitalTransactions(nextDigital);
+      }
 
       addActivityLog({
         title: 'Pemulihan Cadangan Berhasil',
@@ -2012,10 +3045,91 @@ export function AppProvider({ children }) {
         ok: true,
         summary: validation.summary,
         warnings: validation.warnings,
+        hasRollback: true,
       };
     },
-    [validateBackup, settings, addActivityLog]
+    [validateBackup, settings, stores, products, orders, stocks, operators, activeOperatorId, addActivityLog]
   );
+
+  const getPreRestoreSnapshotInfo = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(PREFIX + 'prerestore_snapshot');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.snapshot) return null;
+      return {
+        timestamp: parsed.timestamp,
+        metadata: parsed.metadata || {},
+      };
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const rollbackLastRestore = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(PREFIX + 'prerestore_snapshot');
+      if (!raw) {
+        return { ok: false, reason: 'Tidak ditemukan snapshot data sebelum pemulihan.' };
+      }
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.snapshot || typeof parsed.snapshot !== 'object') {
+        return { ok: false, reason: 'Snapshot pemulihan rusak atau tidak valid.' };
+      }
+
+      // Pulihkan seluruh kunci dari snapshot
+      Object.entries(parsed.snapshot).forEach(([k, val]) => {
+        if (val !== null && val !== undefined) {
+          localStorage.setItem(k, val);
+        } else {
+          localStorage.removeItem(k);
+        }
+      });
+      // Hapus snapshot agar tidak bisa dipanggil berulang kali
+      localStorage.removeItem(PREFIX + 'prerestore_snapshot');
+
+      // Muat ulang state dari localStorage
+      const reloadedStores = load('stores', []).map(migrateStore).filter(Boolean);
+      const reloadedProducts = load('products', []).map(migrateProduct).map(stripBuyOneGetOne).filter(Boolean);
+      const reloadedOrders = load('orders', []).map(migrateOrder);
+      const reloadedStorePrices = load('storePrices', []).map(migrateStorePrice).filter(Boolean);
+      const reloadedStocks = migrateStocks(load('stocks', []), reloadedProducts);
+      const reloadedMovements = load('movements', []);
+      const reloadedShortages = load('shortages', []).map(migrateShortage).filter(Boolean);
+      const reloadedPriceHistory = load('priceHistory', []).map(migratePriceHistory).filter(Boolean);
+      const reloadedSettings = load('settings', seed.settings);
+      const reloadedActivityLogs = load('activityLogs', []);
+      const reloadedOperators = load('operators', DEFAULT_OPERATORS);
+      const reloadedActiveOpId = load('active_operator_id', 'op-ainie');
+
+      setStores(reloadedStores);
+      setProducts(reloadedProducts);
+      setOrders(reloadedOrders);
+      setStorePrices(reloadedStorePrices);
+      setStocks(reloadedStocks);
+      setMovements(reloadedMovements);
+      setShortages(reloadedShortages);
+      setPriceHistory(reloadedPriceHistory);
+      setSettings(reloadedSettings);
+      setActivityLogs(reloadedActivityLogs);
+      setOperators(reloadedOperators);
+      setActiveOperatorId(reloadedActiveOpId);
+
+      addActivityLog({
+        title: 'Pembatalan Pemulihan Berhasil',
+        desc: `Data warung berhasil dikembalikan ke kondisi sebelum pemulihan (${parsed.timestamp}).`,
+        type: 'backup_rollback',
+      });
+
+      return {
+        ok: true,
+        restoredAt: parsed.timestamp,
+        metadata: parsed.metadata,
+      };
+    } catch (err) {
+      return { ok: false, reason: 'Gagal membatalkan pemulihan: ' + err.message };
+    }
+  }, [seed, addActivityLog]);
 
   const activeOrders = useMemo(
     () =>
@@ -2454,6 +3568,39 @@ export function AppProvider({ children }) {
     buildBackup,
     validateBackup,
     importData,
+    rollbackLastRestore,
+    getPreRestoreSnapshotInfo,
+    storageStatus,
+    operators,
+    activeOperator,
+    activeOperatorId,
+    setActiveOperatorId,
+    addOperator,
+    updateOperator,
+    toggleOperatorStatus,
+    visits,
+    todayVisits,
+    overdueVisits,
+    upcomingVisits,
+    completedVisits,
+    cancelledVisits,
+    visitReminders,
+    getVisitComputedStatus,
+    createVisit,
+    updateVisit,
+    completeVisit,
+    cancelVisit,
+    rescheduleVisit,
+    deleteVisit,
+    digitalTransactions,
+    digitalSummary,
+    todayDigitalTransactions,
+    todayDigitalSummary,
+    pendingDigitalTransactions,
+    createDigitalTransaction,
+    updateDigitalTransaction,
+    deleteDigitalTransaction,
+    changeDigitalTransactionStatus,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

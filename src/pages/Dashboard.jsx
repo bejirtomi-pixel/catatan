@@ -5,6 +5,7 @@ import {
   ArrowRight,
   BarChart3,
   Boxes,
+  CalendarClock,
   CheckCircle2,
   ChevronRight,
   ClipboardList,
@@ -19,6 +20,7 @@ import {
   RotateCcw,
   ShoppingCart,
   SlidersHorizontal,
+  Smartphone,
   Sparkles,
   Store,
   Tag,
@@ -54,6 +56,20 @@ const MENU_UTAMA = [
     icon: Boxes,
     desc: 'Pantau, sesuaikan jumlah, & tambah stok warung.',
     color: 'text-primary bg-primary-soft hover:border-primary/40',
+  },
+  {
+    to: '/kunjungan',
+    label: 'Kunjungan',
+    icon: CalendarClock,
+    desc: 'Jadwal sales, pemasok, pengiriman, & agenda warung.',
+    color: 'text-amber-600 bg-amber-50 hover:border-amber-200',
+  },
+  {
+    to: '/catatan-digital',
+    label: 'Catatan Digital',
+    icon: Smartphone,
+    desc: 'Layanan pulsa, paket data, token PLN, transfer, & e-wallet.',
+    color: 'text-blue-600 bg-blue-50 hover:border-blue-200',
   },
   {
     to: '/laporan',
@@ -184,6 +200,14 @@ export default function Dashboard() {
     stores,
     storeById,
     settings,
+    visits = [],
+    todayVisits = [],
+    overdueVisits = [],
+    upcomingVisits = [],
+    digitalTransactions = [],
+    todayDigitalTransactions = [],
+    todayDigitalSummary = { totalProfit: 0 },
+    pendingDigitalTransactions = [],
   } = useApp();
 
   const navigate = useNavigate();
@@ -331,141 +355,229 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Pengingat Agenda Kunjungan Hari Ini & Terlambat */}
+      {(todayVisits.length > 0 || overdueVisits.length > 0) && (
+        <div data-testid="dashboard-visit-reminder" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-violet-200 bg-violet-50/85 p-3.5 sm:px-4 text-xs shadow-soft transition">
+          <div className="flex items-center gap-2.5 text-violet-950">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-violet-200/80 text-violet-800">
+              <CalendarClock className="h-4 w-4" />
+            </span>
+            <div>
+              <p className="font-bold">
+                Agenda Kunjungan ({todayVisits.length} Hari Ini{overdueVisits.length > 0 ? ` · ${overdueVisits.length} Terlambat` : ''})
+              </p>
+              <p className="text-[11px] text-violet-900/80">
+                {todayVisits.length > 0
+                  ? `Agenda aktif hari ini: ${todayVisits.map((v) => v.name).slice(0, 2).join(', ')}${todayVisits.length > 2 ? '...' : ''}.`
+                  : `Terdapat ${overdueVisits.length} jadwal kunjungan yang melewati tanggal dan perlu ditindaklanjuti.`}
+              </p>
+            </div>
+          </div>
+          <Link
+            to="/kunjungan"
+            className="inline-flex items-center gap-1 rounded-xl bg-violet-200/90 px-3 py-1.5 font-bold text-violet-950 hover:bg-violet-300 transition text-xs shadow-xs"
+          >
+            Buka Kunjungan <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      )}
+
+      {/* Pengingat Transaksi Digital Pending */}
+      {pendingDigitalTransactions.length > 0 && (
+        <div data-testid="dashboard-digital-pending" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-blue-200 bg-blue-50/85 p-3.5 sm:px-4 text-xs shadow-soft transition">
+          <div className="flex items-center gap-2.5 text-blue-950">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-blue-200/80 text-blue-800">
+              <Smartphone className="h-4 w-4" />
+            </span>
+            <div>
+              <p className="font-bold">
+                Transaksi Digital Menunggu ({pendingDigitalTransactions.length} Pending)
+              </p>
+              <p className="text-[11px] text-blue-900/80">
+                Terdapat {pendingDigitalTransactions.length} transaksi pulsa/transfer/tagihan yang menunggu konfirmasi penyelesaian.
+              </p>
+            </div>
+          </div>
+          <Link
+            to="/catatan-digital"
+            className="inline-flex items-center gap-1 rounded-xl bg-blue-200/90 px-3 py-1.5 font-bold text-blue-950 hover:bg-blue-300 transition text-xs shadow-xs"
+          >
+            Buka Catatan Digital <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      )}
+
       {/* ============================================================ */}
-      {/* 1. RINGKASAN INVENTARIS BARANG */}
+      {/* 1. BAGIAN ATAS: TEPAT 2 KARTU UTAMA */}
       {/* ============================================================ */}
-      <section data-testid="ringkasan-inventaris-barang" className="space-y-3">
+      <section data-testid="dashboard-top-cards" className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h1 className="text-xl font-extrabold text-ink sm:text-2xl">Dashboard Pencatatan</h1>
             <p className="text-xs text-ink-soft">
-              Pusat informasi dan pemantauan kondisi stok serta pesanan {settings?.name || 'Warung Madura'}.
+              Pusat informasi dan pemantauan kondisi operasional {settings?.name || 'Warung Madura'}.
             </p>
           </div>
-          <Link
-            to="/stok"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-line bg-white px-3 py-1.5 text-xs font-bold text-primary shadow-soft transition hover:border-primary/40"
-          >
-            <Boxes className="h-4 w-4" /> Buka Halaman Stok
-          </Link>
         </div>
 
-        {/* 4 Kartu Ringkasan Inventaris */}
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {/* Total Jenis Barang */}
-          <Link
-            to="/stok"
-            className="card group flex flex-col justify-between p-4 transition hover:-translate-y-0.5 hover:shadow-soft hover:ring-1 hover:ring-primary/40"
+        {/* Tepat 2 Kartu Utama di Bagian Atas */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* Kartu 1: Informasi Tentang Toko */}
+          <div
+            data-testid="card-tentang-toko"
+            className="card flex flex-col justify-between p-5 border border-line shadow-soft bg-white"
           >
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-ink-soft">
-                Total Jenis
-              </span>
-              <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary-soft text-primary transition group-hover:scale-110">
-                <Boxes className="h-4 w-4" />
-              </span>
-            </div>
-            <div className="mt-3">
-              <p className="text-2xl font-black text-ink">{totalJenis}</p>
-              <p className="mt-0.5 text-xs text-ink-soft">Jenis barang tercatat</p>
-            </div>
-          </Link>
+            <div>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  {settings?.logo ? (
+                    <img
+                      src={settings.logo}
+                      alt={settings.name || 'Logo Toko'}
+                      className="h-12 w-12 rounded-2xl object-cover border border-line shadow-xs"
+                    />
+                  ) : (
+                    <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-soft text-primary shadow-xs">
+                      <Store className="h-6 w-6" />
+                    </span>
+                  )}
+                  <div>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-primary">
+                      Informasi Tentang Toko
+                    </span>
+                    <h2 className="text-lg font-black text-ink">
+                      {settings?.name || 'Catatan Warung Madura'}
+                    </h2>
+                  </div>
+                </div>
+                <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 border border-emerald-200">
+                  Aktif
+                </span>
+              </div>
 
-          {/* Total Jumlah Seluruh Stok */}
-          <Link
-            to="/stok"
-            className="card group flex flex-col justify-between p-4 transition hover:-translate-y-0.5 hover:shadow-soft hover:ring-1 hover:ring-sky-500/40"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-sky-700">
-                Total Seluruh Stok
-              </span>
-              <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-sky-50 text-sky-600 transition group-hover:scale-110">
-                <Package className="h-4 w-4" />
-              </span>
-            </div>
-            <div className="mt-3">
-              <p className="text-2xl font-black text-sky-700">{formatQty(totalStokFisik)}</p>
-              <p className="mt-0.5 text-xs text-ink-soft">Dalam satuan dasar fisik</p>
-            </div>
-          </Link>
-
-          {/* Jumlah Barang Hampir Habis */}
-          <Link
-            to="/stok"
-            className="card group flex flex-col justify-between p-4 transition hover:-translate-y-0.5 hover:shadow-soft hover:ring-1 hover:ring-amber-500/40"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700">
-                Hampir Habis
-              </span>
-              <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-50 text-amber-600 transition group-hover:scale-110">
-                <TrendingDown className="h-4 w-4" />
-              </span>
-            </div>
-            <div className="mt-3">
-              <p className="text-2xl font-black text-amber-700">{totalHampirHabis}</p>
-              <p className="mt-0.5 text-xs text-ink-soft">Di bawah batas minimum</p>
-            </div>
-          </Link>
-
-          {/* Jumlah Barang Stok Kosong */}
-          <Link
-            to="/stok"
-            className="card group flex flex-col justify-between p-4 transition hover:-translate-y-0.5 hover:shadow-soft hover:ring-1 hover:ring-rose-500/40"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-rose-700">
-                Stok Kosong
-              </span>
-              <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-rose-50 text-rose-600 transition group-hover:scale-110">
-                <AlertTriangle className="h-4 w-4" />
-              </span>
-            </div>
-            <div className="mt-3">
-              <p className="text-2xl font-black text-rose-700">{totalStokKosong}</p>
-              <p className="mt-0.5 text-xs text-ink-soft">Jumlah stok 0 atau habis</p>
-            </div>
-          </Link>
-        </div>
-
-        {/* Informasi Ringkas Toko Pemasok & Barang Master */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Link
-            to="/toko"
-            className="group flex items-center justify-between rounded-xl border border-line bg-white px-4 py-3 shadow-soft transition hover:border-primary/40 hover:bg-primary-soft/10"
-          >
-            <div className="flex items-center gap-3">
-              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary-soft text-primary">
-                <Store className="h-4 w-4" />
-              </span>
-              <div>
-                <p className="text-xs font-bold text-ink">Toko Pemasok</p>
-                <p className="text-[11px] text-ink-soft">{stores.length} toko terdaftar</p>
+              <div className="mt-4 space-y-1.5 text-xs text-ink-soft">
+                <p className="line-clamp-2 leading-relaxed text-ink/80">
+                  {settings?.description || 'Pencatatan inventaris, stok barang, toko pemasok, dan pesanan operasional warung.'}
+                </p>
+                {settings?.address && (
+                  <p className="text-[11px] text-ink-soft line-clamp-1">
+                    <span className="font-semibold text-ink">Alamat:</span> {settings.address}
+                  </p>
+                )}
+                {settings?.phone && (
+                  <p className="text-[11px] text-ink-soft">
+                    <span className="font-semibold text-ink">Kontak:</span> {settings.phone}
+                  </p>
+                )}
               </div>
             </div>
-            <span className="inline-flex items-center gap-1 text-xs font-bold text-primary">
-              Kelola <ChevronRight className="h-3.5 w-3.5 transition group-hover:translate-x-0.5" />
-            </span>
-          </Link>
 
-          <Link
-            to="/barang"
-            className="group flex items-center justify-between rounded-xl border border-line bg-white px-4 py-3 shadow-soft transition hover:border-primary/40 hover:bg-primary-soft/10"
+            <div className="mt-5 pt-3 border-t border-line/60 flex items-center justify-between">
+              <span className="text-[11px] text-ink-soft">Identitas toko & tema warna</span>
+              <Link
+                to="/pengaturan"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3.5 py-1.5 text-xs font-bold text-white shadow-soft transition hover:bg-primary-dark"
+              >
+                Lihat Pengaturan <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+          </div>
+
+          {/* Kartu 2: Ringkasan Operasional Utama */}
+          <div
+            data-testid="card-ringkasan-operasional"
+            className="card flex flex-col justify-between p-5 border border-line shadow-soft bg-white"
           >
-            <div className="flex items-center gap-3">
-              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-ink/5 text-ink">
-                <Package className="h-4 w-4" />
-              </span>
-              <div>
-                <p className="text-xs font-bold text-ink">Barang Master</p>
-                <p className="text-[11px] text-ink-soft">{products.length} master barang & satuan</p>
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-600">
+                    <Boxes className="h-5 w-5" />
+                  </span>
+                  <div>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-sky-700">
+                      Ringkasan Operasional Utama
+                    </span>
+                    <h2 className="text-base font-black text-ink">Kondisi Stok & Pesanan</h2>
+                  </div>
+                </div>
+                <Link
+                  to="/stok"
+                  className="inline-flex items-center gap-1 text-xs font-bold text-primary hover:underline"
+                >
+                  Buka Stok <ChevronRight className="h-3.5 w-3.5" />
+                </Link>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                <Link
+                  to="/barang"
+                  className="rounded-xl border border-line/70 bg-bg/50 p-2.5 transition hover:border-primary/40 hover:bg-white"
+                >
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">Jenis Produk</p>
+                  <p className="mt-1 text-xl font-black text-ink">{totalJenis}</p>
+                  <p className="text-[10px] text-ink-soft">Item tercatat</p>
+                </Link>
+
+                <Link
+                  to="/stok"
+                  className="rounded-xl border border-line/70 bg-bg/50 p-2.5 transition hover:border-sky-400 hover:bg-white"
+                >
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-sky-700">Total Fisik</p>
+                  <p className="mt-1 text-xl font-black text-sky-700">{formatQty(totalStokFisik)}</p>
+                  <p className="text-[10px] text-ink-soft">Unit dasar</p>
+                </Link>
+
+                <Link
+                  to="/stok"
+                  className="rounded-xl border border-line/70 bg-bg/50 p-2.5 transition hover:border-amber-400 hover:bg-white"
+                >
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Kritis</p>
+                  <p className="mt-1 text-xl font-black text-amber-700">
+                    {totalHampirHabis + totalStokKosong}
+                  </p>
+                  <p className="text-[10px] text-ink-soft">{totalHampirHabis} tipis · {totalStokKosong} habis</p>
+                </Link>
+
+                <Link
+                  to="/pesanan"
+                  className="rounded-xl border border-line/70 bg-bg/50 p-2.5 transition hover:border-violet-400 hover:bg-white"
+                >
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-violet-700">Pesanan Aktif</p>
+                  <p className="mt-1 text-xl font-black text-violet-700">
+                    {pesananBelumSelesai.length + pesananSedangDiproses.length}
+                  </p>
+                  <p className="text-[10px] text-ink-soft">Perlu diproses</p>
+                </Link>
               </div>
             </div>
-            <span className="inline-flex items-center gap-1 text-xs font-bold text-primary">
-              Kelola <ChevronRight className="h-3.5 w-3.5 transition group-hover:translate-x-0.5" />
-            </span>
-          </Link>
+
+            <div className="mt-4 pt-3 border-t border-line/60 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-[11px] text-ink-soft">
+                {stores.length} Toko · {orders.length} Pesanan · {visits.length} Kunjungan · {digitalTransactions.length} Digital
+              </span>
+              <div className="flex items-center gap-3">
+                <Link
+                  to="/kunjungan"
+                  className="text-xs font-bold text-amber-600 hover:underline"
+                >
+                  Kunjungan ({todayVisits.length})
+                </Link>
+                <Link
+                  to="/catatan-digital"
+                  className="text-xs font-bold text-blue-600 hover:underline"
+                >
+                  Digital ({todayDigitalTransactions.length} · {rupiah(todayDigitalSummary.totalProfit)})
+                </Link>
+                <Link
+                  to="/pesanan"
+                  className="text-xs font-bold text-violet-600 hover:underline"
+                >
+                  Kelola Pesanan
+                </Link>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -479,10 +591,10 @@ export default function Dashboard() {
             Menu Utama
           </h2>
           <p className="mt-0.5 text-xs text-ink-soft">
-            Akses cepat ke empat modul utama pencatatan warung Anda.
+            Akses cepat ke modul-modul operasional pencatatan warung Anda.
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-3.5 p-4 sm:p-5 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3.5 p-4 sm:p-5 sm:grid-cols-3 lg:grid-cols-6">
           {MENU_UTAMA.map((m) => (
             <Link
               key={m.to}

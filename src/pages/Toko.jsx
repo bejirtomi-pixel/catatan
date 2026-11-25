@@ -591,7 +591,7 @@ export default function Toko() {
                   return (
                     <div
                       key={s.id}
-                      className={`flex flex-col justify-between rounded-xl border p-3.5 transition shadow-soft ${
+                      className={`flex flex-col justify-between rounded-xl border p-3.5 transition shadow-soft min-h-[210px] ${
                         active
                           ? 'border-primary/50 bg-primary-soft/40 ring-1 ring-primary/20'
                           : 'border-line bg-white hover:border-primary/30'
@@ -608,7 +608,7 @@ export default function Toko() {
                               <Store className="h-4 w-4" />
                             </span>
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm font-bold text-ink leading-snug break-words line-clamp-2" title={s.name}>
+                              <p className="text-sm font-bold text-ink leading-snug break-words" title={s.name}>
                                 {s.name}
                               </p>
                               <div className="flex flex-wrap items-center gap-1 mt-1">

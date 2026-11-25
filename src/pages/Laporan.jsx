@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Ban,
+  Calendar,
+  CalendarClock,
+  CalendarDays,
   CheckCircle2,
   ClipboardList,
   Clock,
@@ -11,6 +14,7 @@ import {
   FileText,
   FilterX,
   History,
+  MapPin,
   PackageCheck,
   PackageX,
   Printer,
@@ -18,11 +22,14 @@ import {
   RefreshCw,
   SearchX,
   ShoppingBag,
+  Smartphone,
   Truck,
+  User,
   X,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { dateKey, formatDateTime, formatQty, getLocalDateString, rupiah, round2 } from '../utils/format';
+import { dateKey, formatDateTime, formatQty, getLocalDateString, rupiah, round2, formatDateId } from '../utils/format';
+import { getCategoryLabel, getStatusLabel, maskDestination } from '../utils/digitalFinance';
 import {
   Btn,
   Chip,
@@ -48,6 +55,9 @@ export default function Laporan() {
   const {
     orders,
     shortages,
+    visits,
+    digitalTransactions = [],
+    getVisitComputedStatus,
     recordRepurchase,
     receiveRepurchase,
     pushToast,
@@ -55,7 +65,7 @@ export default function Laporan() {
     needsRestock,
   } = useApp();
 
-  // Tab aktif: 'pesanan' | 'kekurangan' | 'pembelian_ulang' | 'restock'
+  // Tab aktif: 'pesanan' | 'kekurangan' | 'pembelian_ulang' | 'restock' | 'kunjungan' | 'digital'
   const [activeTab, setActiveTab] = useState('pesanan');
 
   // Filter pencarian dan tanggal
@@ -64,18 +74,24 @@ export default function Laporan() {
   const [endDate, setEndDate] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('semua');
   const [shortageStatusFilter, setShortageStatusFilter] = useState('semua');
+  const [visitStatusFilter, setVisitStatusFilter] = useState('semua');
+  const [digitalCategoryFilter, setDigitalCategoryFilter] = useState('semua');
+  const [digitalStatusFilter, setDigitalStatusFilter] = useState('semua');
 
   // Pagination per tab
   const [pagePesanan, setPagePesanan] = useState(1);
   const [pageKekurangan, setPageKekurangan] = useState(1);
   const [pagePembelian, setPagePembelian] = useState(1);
   const [pageRestock, setPageRestock] = useState(1);
+  const [pageKunjungan, setPageKunjungan] = useState(1);
+  const [pageDigital, setPageDigital] = useState(1);
 
   // Modal states
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [repurchaseTarget, setRepurchaseTarget] = useState(null);
   const [receiveTarget, setReceiveTarget] = useState(null);
   const [detailShortage, setDetailShortage] = useState(null);
+  const [selectedVisitDetail, setSelectedVisitDetail] = useState(null);
   const [exportOpen, setExportOpen] = useState(false);
 
   // 1. Ringkasan Laporan (4 Metrik Data Asli)
@@ -181,7 +197,123 @@ export default function Laporan() {
     });
   }, [allRepurchases, search, startDate, endDate]);
 
-  const hasFilter = search || startDate || endDate || orderStatusFilter !== 'semua' || shortageStatusFilter !== 'semua';
+  // 7. Filter Agenda & Riwayat Kunjungan
+  const filteredVisits = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return (visits || []).filter((v) => {
+      const compStatus = getVisitComputedStatus ? getVisitComputedStatus(v) : v.status;
+      if (visitStatusFilter !== 'semua') {
+        if (visitStatusFilter === 'terjadwal' && compStatus !== 'scheduled') return false;
+        if (visitStatusFilter === 'selesai' && compStatus !== 'completed') return false;
+        if (visitStatusFilter === 'batal' && compStatus !== 'cancelled') return false;
+        if (visitStatusFilter === 'terlambat' && compStatus !== 'overdue') return false;
+      }
+
+      const vDate = v.date;
+      if (startDate && vDate < startDate) return false;
+      if (endDate && vDate > endDate) return false;
+
+      if (!q) return true;
+      const title = (v.title || '').toLowerCase();
+      const target = (v.target || '').toLowerCase();
+      const location = (v.location || '').toLowerCase();
+      const notes = (v.notes || '').toLowerCase();
+      const outcome = (v.completion?.outcome || '').toLowerCase();
+      return (
+        title.includes(q) ||
+        target.includes(q) ||
+        location.includes(q) ||
+        notes.includes(q) ||
+        outcome.includes(q)
+      );
+    });
+  }, [visits, search, startDate, endDate, visitStatusFilter, getVisitComputedStatus]);
+
+  // Metrik ringkasan kunjungan
+  const visitMetrics = useMemo(() => {
+    let selesai = 0;
+    let terlambat = 0;
+    let terjadwal = 0;
+    let batal = 0;
+    for (const v of visits || []) {
+      const s = getVisitComputedStatus ? getVisitComputedStatus(v) : v.status;
+      if (s === 'completed') selesai++;
+      else if (s === 'overdue') terlambat++;
+      else if (s === 'cancelled') batal++;
+      else if (s === 'scheduled') terjadwal++;
+    }
+    return { total: (visits || []).length, selesai, terlambat, terjadwal, batal };
+  }, [visits, getVisitComputedStatus]);
+
+  // 6. Data Laporan Layanan Transaksi Digital (Bagian F)
+  const filteredDigitalReport = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return (digitalTransactions || []).filter((tx) => {
+      if (digitalCategoryFilter !== 'semua' && tx.category !== digitalCategoryFilter) return false;
+      if (digitalStatusFilter !== 'semua' && tx.status !== digitalStatusFilter) return false;
+
+      const txDate = (tx.createdAt || '').slice(0, 10);
+      if (startDate && txDate < startDate) return false;
+      if (endDate && txDate > endDate) return false;
+
+      if (!q) return true;
+      const catLabel = getCategoryLabel(tx.category, tx.customCategoryName).toLowerCase();
+      const prov = (tx.provider || '').toLowerCase();
+      const dest = (tx.destination || '').toLowerCase();
+      const note = (tx.notes || '').toLowerCase();
+      const id = (tx.id || '').toLowerCase();
+      return (
+        catLabel.includes(q) ||
+        prov.includes(q) ||
+        dest.includes(q) ||
+        note.includes(q) ||
+        id.includes(q)
+      );
+    });
+  }, [digitalTransactions, search, startDate, endDate, digitalCategoryFilter, digitalStatusFilter]);
+
+  // Metrik ringkasan transaksi digital
+  const digitalMetrics = useMemo(() => {
+    let completedCount = 0;
+    let pendingCount = 0;
+    let failedCount = 0;
+    let totalCustomerPaid = 0;
+    let totalCapital = 0;
+    let totalProfit = 0;
+
+    for (const tx of filteredDigitalReport) {
+      if (tx.status === 'completed') {
+        completedCount++;
+        totalCustomerPaid += Number(tx.customerPaid) || 0;
+        totalCapital += (Number(tx.capital) || 0) + (Number(tx.providerFee) || 0);
+        totalProfit += Number(tx.profit) || 0;
+      } else if (tx.status === 'pending') {
+        pendingCount++;
+      } else {
+        failedCount++;
+      }
+    }
+
+    return {
+      total: filteredDigitalReport.length,
+      completedCount,
+      pendingCount,
+      failedCount,
+      totalCustomerPaid,
+      totalCapital,
+      totalProfit,
+    };
+  }, [filteredDigitalReport]);
+
+  const hasFilter =
+    search ||
+    startDate ||
+    endDate ||
+    orderStatusFilter !== 'semua' ||
+    shortageStatusFilter !== 'semua' ||
+    visitStatusFilter !== 'semua' ||
+    digitalCategoryFilter !== 'semua' ||
+    digitalStatusFilter !== 'semua';
 
   const resetFilter = () => {
     setSearch('');
@@ -189,10 +321,15 @@ export default function Laporan() {
     setEndDate('');
     setOrderStatusFilter('semua');
     setShortageStatusFilter('semua');
+    setVisitStatusFilter('semua');
+    setDigitalCategoryFilter('semua');
+    setDigitalStatusFilter('semua');
     setPagePesanan(1);
     setPageKekurangan(1);
     setPagePembelian(1);
     setPageRestock(1);
+    setPageKunjungan(1);
+    setPageDigital(1);
   };
 
   const setQuickRange = (preset) => {
@@ -217,6 +354,9 @@ export default function Laporan() {
     }
     setPagePesanan(1);
     setPageKekurangan(1);
+    setPagePembelian(1);
+    setPageKunjungan(1);
+    setPageDigital(1);
   };
 
   // Helper Pagination
@@ -231,6 +371,8 @@ export default function Laporan() {
   const paginatedShortages = paginate(filteredShortages, pageKekurangan);
   const paginatedRepurchases = paginate(filteredRepurchases, pagePembelian);
   const paginatedRestock = paginate(needsRestock, pageRestock);
+  const paginatedVisits = paginate(filteredVisits, pageKunjungan);
+  const paginatedDigital = paginate(filteredDigitalReport, pageDigital);
 
   // 9. Ekspor Excel (CSV UTF-8)
   const handleExportCsv = (type) => {
@@ -280,6 +422,86 @@ export default function Laporan() {
           r.actualPrice || 0,
           r.isReceived ? 'Sudah Diterima' : 'Menunggu Kedatangan',
           r.note || '',
+        ]);
+      }
+    } else if (type === 'kunjungan') {
+      filename = `Laporan-Kunjungan-${getLocalDateString()}.csv`;
+      rows.push([
+        'ID Kunjungan',
+        'Agenda / Judul',
+        'Target / Pihak',
+        'Tipe',
+        'Tanggal Jadwal',
+        'Waktu',
+        'Lokasi',
+        'Status',
+        'Perulangan',
+        'Tanggal Realisasi',
+        'Hasil Kunjungan',
+        'Tindak Lanjut',
+        'Jadwal Berikutnya',
+        'Catatan',
+      ]);
+      for (const v of filteredVisits) {
+        const comp = getVisitComputedStatus ? getVisitComputedStatus(v) : v.status;
+        const statusLabel =
+          comp === 'completed'
+            ? 'Selesai'
+            : comp === 'overdue'
+            ? 'Terlambat'
+            : comp === 'cancelled'
+            ? 'Dibatalkan'
+            : 'Terjadwal';
+        rows.push([
+          v.id,
+          v.title,
+          v.target || '—',
+          v.type || 'Lainnya',
+          v.date,
+          v.time || '—',
+          v.location || '—',
+          statusLabel,
+          v.recurrence === 'weekly' ? 'Mingguan' : v.recurrence === 'biweekly' ? '2 Mingguan' : 'Sekali',
+          v.completion?.actualDate || '—',
+          v.completion?.outcome || '—',
+          v.completion?.followUp || '—',
+          v.completion?.nextVisitDate || '—',
+          v.notes || '',
+        ]);
+      }
+    } else if (type === 'digital') {
+      rows.push([
+        'ID Transaksi',
+        'Waktu',
+        'Kategori',
+        'Provider',
+        'Nomor Tujuan',
+        'Nominal Layanan (Rp)',
+        'Modal (Rp)',
+        'Biaya Provider (Rp)',
+        'Biaya Admin (Rp)',
+        'Total Diterima (Rp)',
+        'Keuntungan (Rp)',
+        'Metode Bayar',
+        'Status',
+        'Catatan',
+      ]);
+      for (const tx of filteredDigitalReport) {
+        rows.push([
+          tx.id,
+          formatDateTime(tx.createdAt),
+          getCategoryLabel(tx.category, tx.customCategoryName),
+          tx.provider || '—',
+          tx.destination || '—',
+          tx.serviceAmount || 0,
+          tx.capital || 0,
+          tx.providerFee || 0,
+          tx.customerAdminFee || 0,
+          tx.customerPaid || 0,
+          tx.profit || 0,
+          tx.paymentMethod || 'cash',
+          getStatusLabel(tx.status),
+          tx.notes || '',
         ]);
       }
     }
@@ -394,8 +616,9 @@ export default function Laporan() {
                 setPagePesanan(1);
                 setPageKekurangan(1);
                 setPagePembelian(1);
+                setPageKunjungan(1);
               }}
-              placeholder="Cari no pesanan, toko, barang..."
+              placeholder="Cari no pesanan, toko, barang, kunjungan..."
               className="w-full sm:w-60"
             />
             <div className="flex items-center gap-1.5 text-xs">
@@ -406,6 +629,8 @@ export default function Laporan() {
                   setStartDate(e.target.value);
                   setPagePesanan(1);
                   setPageKekurangan(1);
+                  setPagePembelian(1);
+                  setPageKunjungan(1);
                 }}
                 className="input h-9 text-xs font-semibold"
                 title="Dari tanggal"
@@ -418,6 +643,8 @@ export default function Laporan() {
                   setEndDate(e.target.value);
                   setPagePesanan(1);
                   setPageKekurangan(1);
+                  setPagePembelian(1);
+                  setPageKunjungan(1);
                 }}
                 className="input h-9 text-xs font-semibold"
                 title="Sampai tanggal"
@@ -509,6 +736,30 @@ export default function Laporan() {
             >
               <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
               <span>D. Stok Perlu Dibeli ({needsRestock.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('kunjungan')}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                activeTab === 'kunjungan'
+                  ? 'bg-primary text-white shadow-soft'
+                  : 'text-ink-soft hover:bg-white hover:text-ink'
+              }`}
+            >
+              <CalendarClock className="h-3.5 w-3.5" />
+              <span>E. Agenda & Riwayat Kunjungan ({filteredVisits.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('digital')}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                activeTab === 'digital'
+                  ? 'bg-primary text-white shadow-soft'
+                  : 'text-ink-soft hover:bg-white hover:text-ink'
+              }`}
+            >
+              <Smartphone className="h-3.5 w-3.5" />
+              <span>F. Layanan Digital ({filteredDigitalReport.length})</span>
             </button>
           </div>
         </div>
@@ -1009,8 +1260,416 @@ export default function Laporan() {
         </section>
       )}
 
+      {/* =========================================================================
+          TAB 5: AGENDA & RIWAYAT KUNJUNGAN (Bagian E)
+          ========================================================================= */}
+      {activeTab === 'kunjungan' && (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+            <div>
+              <h2 className="flex items-center gap-2 text-sm font-extrabold text-ink">
+                <CalendarClock className="h-4 w-4 text-primary" /> Agenda & Riwayat Kunjungan
+              </h2>
+              <p className="text-xs text-ink-soft">
+                Laporan pelaksanaan agenda kunjungan toko pemasok, sales, teknisi, dan evaluasi hasil kunjungan.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                value={visitStatusFilter}
+                onChange={(e) => {
+                  setVisitStatusFilter(e.target.value);
+                  setPageKunjungan(1);
+                }}
+                className="input h-8 text-xs font-bold text-ink"
+                title="Filter status kunjungan"
+              >
+                <option value="semua">Semua Status Kunjungan</option>
+                <option value="terjadwal">Terjadwal</option>
+                <option value="terlambat">Terlambat (Overdue)</option>
+                <option value="selesai">Sudah Selesai</option>
+                <option value="batal">Dibatalkan</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Kartu Metrik Ringkas Kunjungan */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-xl border border-line bg-white p-3 shadow-soft">
+              <p className="text-[11px] font-bold text-ink-soft">Total Kunjungan</p>
+              <p className="mt-1 text-xl font-black text-ink">{visitMetrics.total}</p>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-white p-3 shadow-soft">
+              <p className="text-[11px] font-bold text-emerald-800">Selesai Terlaksana</p>
+              <p className="mt-1 text-xl font-black text-emerald-700">{visitMetrics.selesai}</p>
+            </div>
+            <div className="rounded-xl border border-rose-200 bg-white p-3 shadow-soft">
+              <p className="text-[11px] font-bold text-rose-800">Terlambat / Menunggu</p>
+              <p className="mt-1 text-xl font-black text-rose-700">{visitMetrics.terlambat}</p>
+            </div>
+            <div className="rounded-xl border border-blue-200 bg-white p-3 shadow-soft">
+              <p className="text-[11px] font-bold text-blue-800">Terjadwal Mendatang</p>
+              <p className="mt-1 text-xl font-black text-blue-700">{visitMetrics.terjadwal}</p>
+            </div>
+          </div>
+
+          {filteredVisits.length === 0 ? (
+            <div className="card">
+              <EmptyState
+                icon={CalendarClock}
+                title="Tidak ada agenda kunjungan"
+                description={
+                  hasFilter
+                    ? 'Tidak ada kunjungan yang cocok dengan filter atau kata kunci saat ini.'
+                    : 'Belum ada agenda kunjungan yang tercatat.'
+                }
+              />
+            </div>
+          ) : (
+            <div className="card overflow-hidden shadow-soft">
+              <TableWrap minWidth="min-w-[850px]">
+                <thead className="border-b border-line bg-primary-soft/50 font-bold text-ink text-xs">
+                  <tr>
+                    <TH>Jadwal & Waktu</TH>
+                    <TH>Agenda / Judul</TH>
+                    <TH>Target / Pihak</TH>
+                    <TH>Tipe & Perulangan</TH>
+                    <TH>Status</TH>
+                    <TH>Hasil / Catatan</TH>
+                    <TH className="text-center">Aksi</TH>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line bg-white text-xs">
+                  {paginatedVisits.rows.map((v) => {
+                    const compStatus = getVisitComputedStatus ? getVisitComputedStatus(v) : v.status;
+                    return (
+                      <tr key={v.id} className="transition hover:bg-primary-soft/30">
+                        <TD>
+                          <div className="font-bold text-ink">{formatDateId(v.date)}</div>
+                          <div className="flex items-center gap-1 text-[11px] text-ink-soft">
+                            <Clock className="h-3 w-3" />
+                            {v.time || 'Waktu fleksibel'}
+                          </div>
+                        </TD>
+                        <TD>
+                          <div className="font-extrabold text-ink">{v.title}</div>
+                          {v.location && (
+                            <div className="flex items-center gap-1 text-[11px] text-ink-soft">
+                              <MapPin className="h-3 w-3 text-rose-500" />
+                              {v.location}
+                            </div>
+                          )}
+                        </TD>
+                        <TD className="font-medium text-ink">{v.target || '—'}</TD>
+                        <TD>
+                          <div className="font-semibold text-ink">{v.type || 'Lainnya'}</div>
+                          <div className="text-[10px] text-ink-soft">
+                            {v.recurrence === 'weekly'
+                              ? '🔄 Tiap Minggu'
+                              : v.recurrence === 'biweekly'
+                              ? '🔄 Tiap 2 Minggu'
+                              : 'Sekali kunjungan'}
+                          </div>
+                        </TD>
+                        <TD>
+                          {compStatus === 'completed' ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800">
+                              <CheckCircle2 className="h-3 w-3" /> Selesai
+                            </span>
+                          ) : compStatus === 'overdue' ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-extrabold text-rose-800">
+                              <AlertTriangle className="h-3 w-3" /> Terlambat
+                            </span>
+                          ) : compStatus === 'cancelled' ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-surface-muted px-2 py-0.5 text-[10px] font-extrabold text-ink-soft line-through">
+                              <Ban className="h-3 w-3" /> Batal
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold text-blue-800">
+                              <Clock className="h-3 w-3" /> Terjadwal
+                            </span>
+                          )}
+                        </TD>
+                        <TD className="max-w-[200px]">
+                          {compStatus === 'completed' && v.completion?.outcome ? (
+                            <div className="space-y-0.5">
+                              <p className="line-clamp-2 font-medium text-ink text-[11px]">
+                                {v.completion.outcome}
+                              </p>
+                              {v.completion.nextVisitDate && (
+                                <p className="text-[10px] text-primary font-bold">
+                                  Berikutnya: {formatDateId(v.completion.nextVisitDate)}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="line-clamp-2 text-ink-soft text-[11px]">{v.notes || '—'}</p>
+                          )}
+                        </TD>
+                        <TD className="text-center">
+                          <Btn
+                            size="xs"
+                            variant="soft"
+                            icon={Eye}
+                            onClick={() => setSelectedVisitDetail(v)}
+                            title="Lihat detail agenda kunjungan"
+                          >
+                            Detail
+                          </Btn>
+                        </TD>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </TableWrap>
+            </div>
+          )}
+
+          {filteredVisits.length > 0 && (
+            <div className="card overflow-hidden shadow-soft">
+              <Pagination
+                page={paginatedVisits.safePage}
+                totalPages={paginatedVisits.totalPages}
+                total={filteredVisits.length}
+                from={(paginatedVisits.safePage - 1) * PAGE_SIZE + 1}
+                to={Math.min(paginatedVisits.safePage * PAGE_SIZE, filteredVisits.length)}
+                onPage={setPageKunjungan}
+              />
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* =========================================================================
+          TAB 6: LAYANAN & TRANSAKSI DIGITAL (Bagian F)
+          ========================================================================= */}
+      {activeTab === 'digital' && (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+            <div>
+              <h2 className="flex items-center gap-2 text-sm font-extrabold text-ink">
+                <Smartphone className="h-4 w-4 text-blue-600" /> Laporan Layanan & Transaksi Digital
+              </h2>
+              <p className="text-xs text-ink-soft">
+                Pencatatan omzet layanan pulsa, transfer uang, token PLN, e-wallet, dan keuntungan warung.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={digitalCategoryFilter}
+                onChange={(e) => {
+                  setDigitalCategoryFilter(e.target.value);
+                  setPageDigital(1);
+                }}
+                className="input h-8 text-xs font-bold text-ink"
+                title="Filter kategori layanan digital"
+              >
+                <option value="semua">Semua Kategori Layanan</option>
+                <option value="pulsa">Pulsa Seluler</option>
+                <option value="paket_data">Paket Data</option>
+                <option value="token_listrik">Token Listrik (PLN)</option>
+                <option value="transfer">Transfer Uang</option>
+                <option value="ewallet">Top-up E-Wallet</option>
+                <option value="tagihan">Tagihan (PPOB)</option>
+                <option value="lainnya">Lainnya</option>
+              </select>
+
+              <select
+                value={digitalStatusFilter}
+                onChange={(e) => {
+                  setDigitalStatusFilter(e.target.value);
+                  setPageDigital(1);
+                }}
+                className="input h-8 text-xs font-bold text-ink"
+                title="Filter status transaksi digital"
+              >
+                <option value="semua">Semua Status</option>
+                <option value="completed">Sukses / Selesai</option>
+                <option value="pending">Menunggu / Diproses</option>
+                <option value="failed">Gagal</option>
+                <option value="cancelled">Dibatalkan</option>
+              </select>
+            </div>
+          </div>
+
+          {/* 4 Kartu Metrik Keuangan Digital */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="flex flex-col justify-between rounded-2xl border border-blue-200 bg-white p-4 shadow-soft">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-blue-800">Layanan Diproses</span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                  <Smartphone className="h-4 w-4" />
+                </span>
+              </div>
+              <div className="mt-3">
+                <p className="text-2xl font-black text-blue-700 tracking-tight">{digitalMetrics.total}</p>
+                <p className="mt-0.5 text-[11px] text-ink-soft">
+                  {digitalMetrics.completedCount} sukses · {digitalMetrics.pendingCount} pending
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col justify-between rounded-2xl border border-emerald-200 bg-white p-4 shadow-soft">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-800">Uang Diterima</span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                  <ReceiptText className="h-4 w-4" />
+                </span>
+              </div>
+              <div className="mt-3">
+                <p className="text-2xl font-black text-emerald-700 tracking-tight">
+                  {rupiah(digitalMetrics.totalCustomerPaid)}
+                </p>
+                <p className="mt-0.5 text-[11px] text-ink-soft">Total dibayar pelanggan</p>
+              </div>
+            </div>
+
+            <div className="flex flex-col justify-between rounded-2xl border border-amber-200 bg-white p-4 shadow-soft">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-amber-800">Modal & Biaya Provider</span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                  <ShoppingBag className="h-4 w-4" />
+                </span>
+              </div>
+              <div className="mt-3">
+                <p className="text-2xl font-black text-amber-700 tracking-tight">
+                  {rupiah(digitalMetrics.totalCapital)}
+                </p>
+                <p className="mt-0.5 text-[11px] text-ink-soft">Modal saldo + fee distributor</p>
+              </div>
+            </div>
+
+            <div className="flex flex-col justify-between rounded-2xl border border-primary/20 bg-white p-4 shadow-soft">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-primary">Keuntungan Bersih (Laba)</span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary-soft text-primary">
+                  <CheckCircle2 className="h-4 w-4" />
+                </span>
+              </div>
+              <div className="mt-3">
+                <p className="text-2xl font-black text-primary tracking-tight">
+                  {rupiah(digitalMetrics.totalProfit)}
+                </p>
+                <p className="mt-0.5 text-[11px] text-ink-soft">Laba transaksi sukses</p>
+              </div>
+            </div>
+          </div>
+
+          {filteredDigitalReport.length === 0 ? (
+            <div className="card">
+              <EmptyState
+                icon={hasFilter ? SearchX : Smartphone}
+                title={hasFilter ? 'Transaksi digital tidak ditemukan' : 'Belum ada transaksi digital'}
+                description={
+                  hasFilter
+                    ? 'Coba sesuaikan kata kunci pencarian, rentang tanggal, kategori, atau filter status.'
+                    : 'Catat layanan pulsa, transfer, atau token PLN dari halaman Catatan Digital.'
+                }
+              />
+            </div>
+          ) : (
+            <div className="card overflow-hidden shadow-soft">
+              <TableWrap minWidth="min-w-[880px]">
+                <thead className="border-b border-line bg-primary-soft/50 font-bold text-ink text-xs">
+                  <tr>
+                    <TH>Waktu & ID</TH>
+                    <TH>Layanan</TH>
+                    <TH>Nomor Tujuan</TH>
+                    <TH className="text-right">Modal & Fee</TH>
+                    <TH className="text-right">Total Diterima</TH>
+                    <TH className="text-right">Keuntungan</TH>
+                    <TH className="text-center">Status</TH>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line bg-white text-xs">
+                  {paginatedDigital.rows.map((tx) => {
+                    const statusClass =
+                      tx.status === 'completed'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : tx.status === 'pending'
+                        ? 'bg-amber-50 text-amber-700 border-amber-200'
+                        : tx.status === 'failed'
+                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                        : 'bg-gray-100 text-gray-700 border-gray-200';
+
+                    return (
+                      <tr key={tx.id} className="transition hover:bg-primary-soft/30">
+                        <TD>
+                          <p className="font-extrabold text-ink">{formatDateTime(tx.createdAt)}</p>
+                          <p className="font-mono text-[10px] text-ink-soft">{tx.id}</p>
+                        </TD>
+                        <TD>
+                          <span className="rounded-md bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700 border border-blue-200">
+                            {getCategoryLabel(tx.category, tx.customCategoryName)}
+                          </span>
+                          <p className="mt-0.5 font-bold text-ink">{tx.provider || '—'}</p>
+                          {tx.notes && (
+                            <p className="max-w-[150px] truncate text-[10px] italic text-ink-soft">
+                              “{tx.notes}”
+                            </p>
+                          )}
+                        </TD>
+                        <TD>
+                          <span className="font-mono font-medium text-ink">
+                            {maskDestination(tx.destination)}
+                          </span>
+                        </TD>
+                        <TD className="text-right">
+                          <p className="font-semibold text-ink">
+                            {rupiah((Number(tx.capital) || 0) + (Number(tx.providerFee) || 0))}
+                          </p>
+                          <p className="text-[10px] text-ink-soft">
+                            Modal {rupiah(tx.capital)} · Fee {rupiah(tx.providerFee)}
+                          </p>
+                        </TD>
+                        <TD className="text-right">
+                          <p className="font-extrabold text-emerald-700">{rupiah(tx.customerPaid)}</p>
+                          <p className="text-[10px] text-ink-soft capitalize">{tx.paymentMethod || 'cash'}</p>
+                        </TD>
+                        <TD className="text-right">
+                          <p className={`font-black ${tx.profit > 0 ? 'text-primary' : 'text-ink-soft'}`}>
+                            {rupiah(tx.profit)}
+                          </p>
+                        </TD>
+                        <TD className="text-center">
+                          <span
+                            className={`inline-block rounded-full px-2.5 py-0.5 text-[11px] font-bold border ${statusClass}`}
+                          >
+                            {getStatusLabel(tx.status)}
+                          </span>
+                        </TD>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </TableWrap>
+            </div>
+          )}
+
+          {filteredDigitalReport.length > 0 && (
+            <div className="card overflow-hidden shadow-soft">
+              <Pagination
+                page={paginatedDigital.safePage}
+                totalPages={paginatedDigital.totalPages}
+                total={filteredDigitalReport.length}
+                from={(paginatedDigital.safePage - 1) * PAGE_SIZE + 1}
+                to={Math.min(paginatedDigital.safePage * PAGE_SIZE, filteredDigitalReport.length)}
+                onPage={setPageDigital}
+              />
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Modal Detail Pesanan */}
       <OrderDetailModal order={selectedOrder} onClose={() => setSelectedOrder(null)} />
+
+      {/* Modal Detail Agenda Kunjungan */}
+      <VisitDetailReportModal
+        visit={selectedVisitDetail}
+        onClose={() => setSelectedVisitDetail(null)}
+        getVisitComputedStatus={getVisitComputedStatus}
+      />
 
       {/* Modal Tandai Sudah Dibeli (Pencatatan Pembelian Ulang) */}
       <RepurchaseModal
@@ -1578,6 +2237,40 @@ function ExportModal({ open, onClose, onExport }) {
           <Download className="h-4 w-4 text-ink-soft" />
         </button>
 
+        <button
+          type="button"
+          onClick={() => onExport('kunjungan')}
+          className="flex w-full items-center justify-between rounded-xl border border-line bg-white p-3 text-left transition hover:border-primary hover:bg-primary-soft/30"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-50 text-purple-600">
+              <FileSpreadsheet className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-xs font-bold text-ink">Agenda & Riwayat Kunjungan (Excel / CSV)</p>
+              <p className="text-[11px] text-ink-soft">Daftar agenda kunjungan, jadwal, dan riwayat hasil</p>
+            </div>
+          </div>
+          <Download className="h-4 w-4 text-ink-soft" />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onExport('digital')}
+          className="flex w-full items-center justify-between rounded-xl border border-line bg-white p-3 text-left transition hover:border-primary hover:bg-primary-soft/30"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+              <FileSpreadsheet className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-xs font-bold text-ink">Layanan Transaksi Digital (Excel / CSV)</p>
+              <p className="text-[11px] text-ink-soft">Riwayat pulsa, transfer, token PLN, e-wallet, & laba</p>
+            </div>
+          </div>
+          <Download className="h-4 w-4 text-ink-soft" />
+        </button>
+
         <div className="border-t border-line/60 pt-2">
           <button
             type="button"
@@ -1599,6 +2292,117 @@ function ExportModal({ open, onClose, onExport }) {
             <FileText className="h-4 w-4 text-ink-soft" />
           </button>
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* =========================================================================
+   Modal Detail Agenda Kunjungan di Laporan
+   ========================================================================= */
+function VisitDetailReportModal({ visit, onClose, getVisitComputedStatus }) {
+  if (!visit) return null;
+  const compStatus = getVisitComputedStatus ? getVisitComputedStatus(visit) : visit.status;
+
+  return (
+    <Modal
+      open={!!visit}
+      onClose={onClose}
+      title="Detail Agenda Kunjungan"
+      subtitle={`ID: ${visit.id}`}
+      size="md"
+      footer={
+        <Btn variant="outline" size="sm" onClick={onClose}>
+          Tutup
+        </Btn>
+      }
+    >
+      <div className="space-y-4 text-xs">
+        <div className="rounded-xl border border-line bg-primary-soft/30 p-3.5">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="font-extrabold text-ink text-sm">{visit.title}</h3>
+            {compStatus === 'completed' ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
+                <CheckCircle2 className="h-3 w-3" /> Selesai
+              </span>
+            ) : compStatus === 'overdue' ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2.5 py-0.5 text-xs font-bold text-rose-800">
+                <AlertTriangle className="h-3 w-3" /> Terlambat
+              </span>
+            ) : compStatus === 'cancelled' ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-surface-muted px-2.5 py-0.5 text-xs font-bold text-ink-soft">
+                <Ban className="h-3 w-3" /> Dibatalkan
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-bold text-blue-800">
+                <Clock className="h-3 w-3" /> Terjadwal
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-ink-soft">
+            Pihak / Target: <strong className="text-ink">{visit.target || '—'}</strong>
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-lg border border-line bg-surface/40 p-2.5">
+            <span className="text-[10px] font-bold text-ink-soft">Jadwal Rencana</span>
+            <p className="font-extrabold text-ink">{formatDateId(visit.date)}</p>
+            <p className="text-[11px] text-ink-soft">Pukul {visit.time || 'Fleksibel'}</p>
+          </div>
+          <div className="rounded-lg border border-line bg-surface/40 p-2.5">
+            <span className="text-[10px] font-bold text-ink-soft">Tipe & Perulangan</span>
+            <p className="font-extrabold text-ink">{visit.type || 'Lainnya'}</p>
+            <p className="text-[11px] text-ink-soft">
+              {visit.recurrence === 'weekly'
+                ? 'Mingguan (+7 hari)'
+                : visit.recurrence === 'biweekly'
+                ? '2 Mingguan (+14 hari)'
+                : 'Sekali'}
+            </p>
+          </div>
+        </div>
+
+        {visit.location && (
+          <div>
+            <span className="text-[10px] font-bold text-ink-soft">Lokasi / Alamat</span>
+            <p className="font-medium text-ink mt-0.5">{visit.location}</p>
+          </div>
+        )}
+
+        {visit.notes && (
+          <div>
+            <span className="text-[10px] font-bold text-ink-soft">Catatan / Rencana Agenda</span>
+            <p className="font-medium text-ink mt-0.5 whitespace-pre-wrap rounded-lg border border-line bg-surface/20 p-2.5">
+              {visit.notes}
+            </p>
+          </div>
+        )}
+
+        {visit.completion && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-emerald-800">Hasil & Realisasi Kunjungan</span>
+              <span className="text-[11px] text-emerald-700">
+                {visit.completion.actualDate ? formatDateId(visit.completion.actualDate) : '—'}
+              </span>
+            </div>
+            {visit.completion.outcome && (
+              <p className="text-ink text-xs whitespace-pre-wrap">{visit.completion.outcome}</p>
+            )}
+            {visit.completion.followUp && (
+              <div className="pt-1 border-t border-emerald-200/60">
+                <span className="text-[10px] font-bold text-ink-soft">Tindak Lanjut:</span>
+                <p className="text-ink text-xs">{visit.completion.followUp}</p>
+              </div>
+            )}
+            {visit.completion.nextVisitDate && (
+              <div className="pt-1 text-[11px] font-bold text-emerald-800">
+                Jadwal Kunjungan Berikutnya: {formatDateId(visit.completion.nextVisitDate)}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </Modal>
   );
