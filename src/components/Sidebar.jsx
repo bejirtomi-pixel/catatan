@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { BarChart3, Boxes, CalendarClock, ClipboardList, LayoutDashboard, Package, Settings, Smartphone, Store, X } from 'lucide-react';
+import { BarChart3, Boxes, CalendarClock, ClipboardList, HandCoins, LayoutDashboard, Package, Settings, Smartphone, Store, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import Logo from './Logo';
 import UserAccountCard from './UserAccountCard';
@@ -11,6 +11,7 @@ export const NAV = [
   { to: '/toko', label: 'Toko', icon: Store },
   { to: '/pesanan', label: 'Pesanan', icon: ClipboardList },
   { to: '/stok', label: 'Stok', icon: Boxes },
+  { to: '/hutang-piutang', label: 'Hutang-Piutang', icon: HandCoins },
   { to: '/kunjungan', label: 'Kunjungan', icon: CalendarClock },
   { to: '/catatan-digital', label: 'Catatan Digital', icon: Smartphone },
   { to: '/laporan', label: 'Laporan', icon: BarChart3 },
@@ -18,7 +19,7 @@ export const NAV = [
 ];
 
 export default function Sidebar({ open, onClose }) {
-  const { settings, activeOrders, visitReminders, pendingDigitalTransactions } = useApp();
+  const { settings, activeOrders, visitReminders, pendingDigitalTransactions, activeDebts } = useApp();
   return (
     <>
       {open && (
@@ -41,10 +42,10 @@ export default function Sidebar({ open, onClose }) {
             alt={settings.name || 'Logo warung'}
           />
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-extrabold text-ink leading-snug line-clamp-1 break-words" title={settings.name || 'Warung Madura'}>
+            <p className="text-sm font-extrabold text-ink leading-snug break-words" title={settings.name || 'Warung Madura'}>
               {settings.name || 'Warung Madura'}
             </p>
-            <p className="text-[11px] font-medium text-ink-soft leading-snug line-clamp-2 break-words" title={settings.description || 'Catatan Stok & Pesanan'}>
+            <p className="text-[11px] font-medium text-ink-soft leading-snug break-words" title={settings.description || 'Catatan Stok & Pesanan'}>
               {settings.description || 'Catatan Stok & Pesanan'}
             </p>
           </div>
@@ -79,6 +80,11 @@ export default function Sidebar({ open, onClose }) {
                   {activeOrders.length}
                 </span>
               )}
+              {item.to === '/hutang-piutang' && activeDebts && activeDebts.length > 0 && (
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[11px] font-bold text-white shadow-xs" title={`${activeDebts.length} catatan hutang/piutang aktif`}>
+                  {activeDebts.length}
+                </span>
+              )}
               {item.to === '/kunjungan' && visitReminders && visitReminders.length > 0 && (
                 <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-bold text-white shadow-xs">
                   {visitReminders.length}
@@ -106,13 +112,13 @@ export default function Sidebar({ open, onClose }) {
             />
             <div className="min-w-0 flex-1">
               <p
-                className="text-xs font-extrabold text-ink leading-tight break-words line-clamp-1"
+                className="text-xs font-extrabold text-ink leading-tight break-words"
                 title={settings.name || 'Warung Madura'}
               >
                 {settings.name || 'Warung Madura'}
               </p>
               <p
-                className="mt-0.5 text-[10px] leading-snug text-ink-soft line-clamp-1 break-words"
+                className="mt-0.5 text-[10px] leading-snug text-ink-soft break-words"
                 title={settings.description || 'Catatan Stok & Pesanan'}
               >
                 {settings.description || 'Catatan Stok & Pesanan'}

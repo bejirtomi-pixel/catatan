@@ -18,7 +18,9 @@
     "test:batch4": "node scripts/test-batch4-core-functionality.mjs",
     "test:batch5": "node scripts/test-batch5-visit-module.mjs",
     "test:batch6": "node scripts/test-batch6-digital-transaction.mjs",
-    "test:batch71": "node scripts/test-batch71-readiness.mjs"
+    "test:batch71": "node scripts/test-batch71-readiness.mjs",
+    "test:hutang-piutang": "node scripts/test-hutang-piutang.mjs",
+    "test:relasi": "node scripts/test-relasi-toko-sales.mjs"
   },
   "dependencies": {
     "firebase": "^13.4.0",

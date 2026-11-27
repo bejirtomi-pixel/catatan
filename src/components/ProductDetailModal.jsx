@@ -43,7 +43,7 @@ export default function ProductDetailModal({
   onCreateOrder,
   onShowHistory,
 }) {
-  const { stockOfProduct, baseNameOf, movements } = useApp();
+  const { stores, stockOfProduct, baseNameOf, movements } = useApp();
   const navigate = useNavigate();
   if (!product) return null;
 
@@ -272,6 +272,31 @@ export default function ProductDetailModal({
               </p>
             )}
           </div>
+
+          {/* Toko Pemasok & Sales Terkait */}
+          {Array.isArray(product.storeIds) && product.storeIds.length > 0 && (
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3 text-xs space-y-1.5">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-700">
+                Supplier &amp; Sales Terkait
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {product.storeIds.map((sid) => {
+                  const s = (stores || []).find((x) => x.id === sid);
+                  if (!s) return null;
+                  const sl = (s.sales || []).find((x) => x.id === product.salesId);
+                  return (
+                    <span
+                      key={s.id}
+                      className="inline-flex items-center gap-1 rounded-lg bg-white border border-indigo-200 px-2 py-1 text-xs font-semibold text-indigo-900 shadow-xs"
+                    >
+                      🏪 {s.name}
+                      {sl && <span className="text-indigo-600 font-bold">• 👤 {sl.name}</span>}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Riwayat Mutasi Stok Terakhir */}
           <div className="rounded-2xl border border-line bg-surface p-3.5 text-xs">

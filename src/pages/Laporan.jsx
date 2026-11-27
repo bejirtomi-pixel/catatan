@@ -835,7 +835,7 @@ export default function Laporan() {
                         <TD>
                           <p className="font-extrabold text-primary">{o.id}</p>
                           {o.note && (
-                            <p className="max-w-[140px] truncate text-[11px] italic text-ink-soft">
+                            <p className="max-w-[200px] break-words text-[11px] italic text-ink-soft leading-snug">
                               “{o.note}”
                             </p>
                           )}
@@ -845,9 +845,9 @@ export default function Laporan() {
                           <Chip tone="soft">🏪 {storeById(o.storeId)?.name || '—'}</Chip>
                         </TD>
                         <TD>
-                          <div className="min-w-0 max-w-[200px]">
+                          <div className="min-w-0 max-w-[220px]">
                             <p className="font-bold text-ink">{o.items?.length || 0} jenis</p>
-                            <p className="truncate text-[11px] text-ink-soft">
+                            <p className="break-words text-[11px] text-ink-soft leading-snug">
                               {(o.items || []).map((i) => i.productNameSnapshot).join(', ')}
                             </p>
                           </div>
@@ -1393,7 +1393,7 @@ export default function Laporan() {
                         <TD className="max-w-[200px]">
                           {compStatus === 'completed' && v.completion?.outcome ? (
                             <div className="space-y-0.5">
-                              <p className="line-clamp-2 font-medium text-ink text-[11px]">
+                              <p className="break-words font-medium text-ink text-[11px] leading-snug">
                                 {v.completion.outcome}
                               </p>
                               {v.completion.nextVisitDate && (
@@ -1403,7 +1403,7 @@ export default function Laporan() {
                               )}
                             </div>
                           ) : (
-                            <p className="line-clamp-2 text-ink-soft text-[11px]">{v.notes || '—'}</p>
+                            <p className="break-words text-ink-soft text-[11px] leading-snug">{v.notes || '—'}</p>
                           )}
                         </TD>
                         <TD className="text-center">
@@ -1604,7 +1604,7 @@ export default function Laporan() {
                           </span>
                           <p className="mt-0.5 font-bold text-ink">{tx.provider || '—'}</p>
                           {tx.notes && (
-                            <p className="max-w-[150px] truncate text-[10px] italic text-ink-soft">
+                            <p className="max-w-[200px] break-words text-[10px] italic text-ink-soft leading-snug">
                               “{tx.notes}”
                             </p>
                           )}

@@ -15,6 +15,7 @@ service cloud.firestore {
     // Fungsi Pembantu: Verifikasi Kepemilikan Toko Berdasarkan ownerUid Murni
     function isStoreOwner(storeId) {
       return isAuthenticated() && 
+        storeId == ('store_' + request.auth.uid) &&
         exists(/databases/$(database)/documents/stores_app/$(storeId)) &&
         request.auth.uid == get(/databases/$(database)/documents/stores_app/$(storeId)).data.ownerUid;
     }
@@ -78,9 +79,9 @@ service cloud.firestore {
     match /stores_app/{storeId} {
 
       // Profil Utama Warung
-      allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid;
-      allow create: if isAuthenticated() && request.resource.data.ownerUid == request.auth.uid;
-      allow update: if isStoreOwner(storeId) && isImmutableKey('ownerUid');
+      allow read: if isAuthenticated() && resource.data.ownerUid == request.auth.uid && storeId == ('store_' + request.auth.uid);
+      allow create: if isAuthenticated() && request.resource.data.ownerUid == request.auth.uid && storeId == ('store_' + request.auth.uid);
+      allow update: if isStoreOwner(storeId) && isImmutableKey('ownerUid') && storeId == ('store_' + request.auth.uid);
       allow delete: if false; // Profil warung dilarang dihapus
 
       // -------------------------------------------------------------
@@ -234,6 +235,21 @@ service cloud.firestore {
         allow delete: if false; // Riwayat kunjungan dilarang dihapus
       }
 
+      // Dokumen Kunjungan Utama (Jadwal, Realisasi & Pengulangan)
+      match /visits/{visitId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && isImmutableKey('id')
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
       // -------------------------------------------------------------
       // SUBKOLEKSI: PESANAN & PENERIMAAN SEBAGIAN
       // -------------------------------------------------------------
@@ -279,6 +295,43 @@ service cloud.firestore {
           && request.resource.data.totalReceived == (request.resource.data.nominalPokok + request.resource.data.adminFee)
           && isValidTimestamp(request.resource.data.updatedAt);
         allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId) && resource.data.status == 'dibatalkan';
+      }
+
+      // Dokumen Transaksi Digital (Pulsa, PLN, Transfer, E-Wallet, Tagihan)
+      match /digital_transactions/{transactionId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.category is string
+          && request.resource.data.serviceAmount is number && request.resource.data.serviceAmount >= 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && isImmutableKey('id')
+          && request.resource.data.serviceAmount is number && request.resource.data.serviceAmount >= 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
+      }
+
+      // -------------------------------------------------------------
+      // SUBKOLEKSI: CATATAN HUTANG-PIUTANG WARUNG (DEBTS)
+      // -------------------------------------------------------------
+      match /debts/{debtId} {
+        allow read: if isStoreOwner(storeId);
+        allow create: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && request.resource.data.type in ['hutang', 'piutang']
+          && request.resource.data.amount is number && request.resource.data.amount >= 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow update: if isStoreOwner(storeId)
+          && isNotMaintenanceLocked(storeId)
+          && isImmutableKey('id')
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && request.resource.data.type in ['hutang', 'piutang']
+          && request.resource.data.amount is number && request.resource.data.amount >= 0
+          && isValidTimestamp(request.resource.data.updatedAt);
+        allow delete: if isStoreOwner(storeId) && isNotMaintenanceLocked(storeId);
       }
 
       // -------------------------------------------------------------

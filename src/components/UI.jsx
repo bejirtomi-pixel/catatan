@@ -117,14 +117,15 @@ export function Toggle({ checked, onChange, label }) {
 }
 
 /* ---------- Page header ---------- */
-export function PageHeader({ title, subtitle, children }) {
+export function PageHeader({ title, subtitle, action, children }) {
+  const content = children || action;
   return (
     <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <h1 className="text-xl font-extrabold text-ink sm:text-2xl">{title}</h1>
         {subtitle && <p className="mt-0.5 text-sm text-ink-soft">{subtitle}</p>}
       </div>
-      <div className="flex flex-wrap items-center gap-2">{children}</div>
+      {content && <div className="flex flex-wrap items-center gap-2">{content}</div>}
     </div>
   );
 }
@@ -134,7 +135,7 @@ export function Modal({ open, onClose, title, subtitle, size = 'md', footer, chi
   if (!open) return null;
   const sizes = { sm: 'max-w-md', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-3xl' }[size];
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
       <motion.div
         className="absolute inset-0 bg-ink/45 backdrop-blur-sm"
         initial={{ opacity: 0 }}
@@ -145,24 +146,24 @@ export function Modal({ open, onClose, title, subtitle, size = 'md', footer, chi
         initial={{ opacity: 0, scale: 0.96, y: 14 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ duration: 0.18, ease: 'easeOut' }}
-        className={cx('relative w-full overflow-hidden rounded-2xl bg-surface shadow-card', sizes)}
+        className={cx('relative w-full overflow-hidden rounded-2xl bg-surface shadow-card max-h-[92vh] flex flex-col', sizes)}
       >
-        <div className="flex items-center justify-between gap-4 border-b border-line px-5 py-4">
-          <div className="min-w-0">
-            <h3 className="truncate text-base font-bold text-ink">{title}</h3>
-            {subtitle && <p className="mt-0.5 text-xs text-ink-soft">{subtitle}</p>}
+        <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3.5 sm:px-5 sm:py-4 shrink-0">
+          <div className="min-w-0 flex-1">
+            <h3 className="break-words text-base font-bold text-ink leading-snug">{title}</h3>
+            {subtitle && <p className="mt-0.5 text-xs text-ink-soft break-words leading-relaxed">{subtitle}</p>}
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="shrink-0 rounded-lg p-1.5 text-ink-soft transition hover:bg-primary-soft hover:text-ink"
+            className="shrink-0 rounded-lg p-1.5 text-ink-soft transition hover:bg-primary-soft hover:text-ink mt-0.5"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="max-h-[72vh] overflow-y-auto px-5 py-4">{children}</div>
+        <div className="max-h-[75vh] overflow-y-auto px-4 py-3.5 sm:px-5 sm:py-4">{children}</div>
         {footer && (
-          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line bg-primary-soft/40 px-5 py-3.5">
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line bg-primary-soft/40 px-4 py-3 sm:px-5 sm:py-3.5 shrink-0">
             {footer}
           </div>
         )}
@@ -200,16 +201,16 @@ export function ConfirmModal({
         </>
       }
     >
-      <div className="flex gap-3">
+      <div className="flex items-start gap-3">
         <span
           className={cx(
-            'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl',
+            'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl mt-0.5',
             danger ? 'bg-rose-50 text-rose-500' : 'bg-primary-soft text-primary'
           )}
         >
           <ShieldAlert className="h-5 w-5" />
         </span>
-        <p className="text-sm leading-relaxed text-ink-soft">{message}</p>
+        <p className="text-sm leading-relaxed text-ink-soft break-words flex-1">{message}</p>
       </div>
       {children}
     </Modal>

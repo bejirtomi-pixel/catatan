@@ -85,8 +85,8 @@ export default function SearchSelect({
             >
               {o.emoji && <span className="text-base">{o.emoji}</span>}
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium text-ink">{o.label}</span>
-                {o.sub && <span className="block truncate text-xs text-ink-soft">{o.sub}</span>}
+                <span className="block break-words font-medium text-ink leading-snug">{o.label}</span>
+                {o.sub && <span className="block break-words text-xs text-ink-soft leading-tight mt-0.5">{o.sub}</span>}
               </span>
               {value === o.id && <Check className="h-4 w-4 text-primary" />}
             </button>

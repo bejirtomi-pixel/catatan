@@ -348,7 +348,7 @@ export default function Pesanan() {
                       <TD>
                         <p className="font-extrabold text-primary">{o.id}</p>
                         {o.note && (
-                          <p className="max-w-[150px] truncate text-[11px] italic text-ink-soft" title={o.note}>
+                          <p className="max-w-[200px] break-words text-[11px] italic text-ink-soft leading-snug" title={o.note}>
                             “{o.note}”
                           </p>
                         )}
@@ -374,7 +374,7 @@ export default function Pesanan() {
                             {previewItems.map((it, idx) => (
                               <span
                                 key={idx}
-                                className="inline-block max-w-[125px] truncate rounded bg-primary-soft/70 px-1.5 py-0.5 text-[10px] font-semibold text-ink"
+                                className="inline-block break-words rounded bg-primary-soft/70 px-1.5 py-0.5 text-[10px] font-semibold text-ink"
                                 title={`${it.productNameSnapshot} (${it.quantity} ${it.unitName})`}
                               >
                                 {it.productNameSnapshot}
@@ -478,7 +478,7 @@ export default function Pesanan() {
                       <span className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">
                         Toko Pemasok
                       </span>
-                      <p className="mt-0.5 font-bold text-ink truncate" title={storeName}>
+                      <p className="mt-0.5 font-bold text-ink break-words leading-tight" title={storeName}>
                         🏪 {storeName}
                       </p>
                     </div>
@@ -504,7 +504,7 @@ export default function Pesanan() {
                       {previewItems.map((it, idx) => (
                         <span
                           key={idx}
-                          className="inline-block max-w-[140px] truncate rounded bg-white px-2 py-0.5 text-[10px] font-semibold text-ink border border-line/60 shadow-xs"
+                          className="inline-block break-words rounded bg-white px-2 py-0.5 text-[10px] font-semibold text-ink border border-line/60 shadow-xs"
                           title={`${it.productNameSnapshot} (${it.quantity} ${it.unitName})`}
                         >
                           {it.productNameSnapshot} ({it.quantity} {it.unitName})

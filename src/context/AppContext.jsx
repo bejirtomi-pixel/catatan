@@ -1,11 +1,28 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AuthContext } from './AuthContext';
 import { enqueueOperation } from '../services/offlineQueue';
-import { startSyncEngine, stopSyncEngine, triggerSyncNow } from '../services/syncEngine';
+import {
+  startSyncEngine,
+  stopSyncEngine,
+  triggerSyncNow,
+  registerCloudUpdateHandler,
+  subscribeSyncState,
+  getSyncState,
+} from '../services/syncEngine';
 import { buildSeed } from '../data/seed';
 import { DEFAULT_OPERATORS, createOperatorSnapshot } from '../data/operators';
 import { addDays, computeDataChecksum, dateCompact, dateKey, formatDateId, formatQty, getDayNameId, getLocalDateString, localDateToISO, round2, uid } from '../utils/format';
 import { calculateDigitalProfit, validateDigitalTransaction, summarizeDigitalTransactions } from '../utils/digitalFinance';
+import {
+  calculateDebtRemaining,
+  calculateDebtTotalPaid,
+  computeDebtStatus,
+  migrateDebt,
+  summarizeDebts,
+  summarizeParties,
+  validateDebtPayment,
+  validateDebtRecord,
+} from '../utils/debtFinance';
 
 export { DEFAULT_OPERATORS, computeDataChecksum };
 
@@ -107,13 +124,26 @@ const save = (key, data) => {
 /* ---------- Migrasi model lama -> baru ---------- */
 const migrateStore = (s) => {
   if (!s || typeof s !== 'object') return null;
+  const rawSales = Array.isArray(s.sales) ? s.sales : [];
+  const safeSales = rawSales.filter(Boolean).map((sl) => ({
+    id: sl.id || uid('sls-'),
+    name: String(sl.name || '').trim(),
+    contact: sl.contact ? String(sl.contact).trim() : '',
+    products: sl.products ? String(sl.products).trim() : '',
+    notes: sl.notes ? String(sl.notes).trim() : (sl.note ? String(sl.note).trim() : ''),
+    createdAt: sl.createdAt || new Date().toISOString(),
+    updatedAt: sl.updatedAt || sl.createdAt || new Date().toISOString(),
+  }));
+
   return {
     id: s.id || uid('st-'),
     name: String(s.name || '').trim(),
     phone: s.phone ? String(s.phone).trim() : '',
     address: s.address ? String(s.address).trim() : '',
     note: s.note ? String(s.note).trim() : '',
+    sales: safeSales,
     createdAt: s.createdAt || new Date().toISOString(),
+    updatedAt: s.updatedAt || s.createdAt || new Date().toISOString(),
   };
 };
 
@@ -122,6 +152,10 @@ const migrateProduct = (p) => {
 
   // Pastikan storeIds selalu berformat array aman
   const storeIds = Array.isArray(p.storeIds) ? p.storeIds.filter(Boolean) : [];
+  const salesId = p.salesId ? String(p.salesId).trim() : '';
+  const salesIds = Array.isArray(p.salesIds)
+    ? p.salesIds.filter(Boolean)
+    : (salesId ? [salesId] : []);
 
   // Pastikan units selalu memiliki minimal 1 satuan dan terdapat satuan dasar (factor === 1)
   let rawUnits = Array.isArray(p.units) && p.units.length > 0 ? p.units.slice() : [];
@@ -151,6 +185,8 @@ const migrateProduct = (p) => {
     category: p.category ? String(p.category).trim() : '',
     minStock: p.minStock != null ? Number(p.minStock) : null,
     storeIds,
+    salesId,
+    salesIds,
     units: safeUnits,
     featured: !!p.featured,
     description: p.description || '',
@@ -472,6 +508,10 @@ const migrateVisit = (v) => {
 
   return {
     id: v.id || uid('vst-'),
+    storeId: v.storeId ? String(v.storeId).trim() : '',
+    salesId: v.salesId ? String(v.salesId).trim() : '',
+    storeName: v.storeName ? String(v.storeName).trim() : '',
+    salesName: v.salesName ? String(v.salesName).trim() : '',
     name: name || agenda,
     target: name || agenda,
     agenda: agenda || name,
@@ -561,6 +601,12 @@ export function AppProvider({ children }) {
       .map(migrateDigitalTransaction)
       .filter(Boolean)
   );
+  const [debts, setDebts] = useState(() =>
+    (load('debts', seed.debts || []) || []).map(migrateDebt).filter(Boolean)
+  );
+  const [gasBorrows, setGasBorrows] = useState(() =>
+    load('gas_borrows', seed.gasBorrows || []) || []
+  );
   const [activityLogs, setActivityLogs] = useState(() => load('activityLogs', []));
   const [readNotifIds, setReadNotifIds] = useState(() => load('readNotifIds', []));
   const [operators, setOperators] = useState(() => {
@@ -607,6 +653,21 @@ export function AppProvider({ children }) {
     };
   }, [ownerUid]);
 
+  // Status Sinkronisasi Realtime
+  const [syncStatus, setSyncStatus] = useState(getSyncState);
+  useEffect(() => {
+    return subscribeSyncState((state) => {
+      setSyncStatus(state);
+    });
+  }, []);
+
+  const manualSync = useCallback(
+    (opts) => {
+      return triggerSyncNow({ ownerUid, ...opts });
+    },
+    [ownerUid]
+  );
+
   useEffect(() => save('stores', stores), [stores]);
   useEffect(() => save('products', products), [products]);
   useEffect(() => save('orders', orders), [orders]);
@@ -622,6 +683,8 @@ export function AppProvider({ children }) {
   useEffect(() => save('active_operator_id', activeOperatorId), [activeOperatorId]);
   useEffect(() => save('visits', visits), [visits]);
   useEffect(() => save('digital_transactions', digitalTransactions), [digitalTransactions]);
+  useEffect(() => save('debts', debts), [debts]);
+  useEffect(() => save('gas_borrows', gasBorrows), [gasBorrows]);
 
   const activeOperator = useMemo(() => {
     const list = Array.isArray(operators) ? operators : DEFAULT_OPERATORS;
@@ -630,6 +693,214 @@ export function AppProvider({ children }) {
     const firstActive = list.find((o) => o.status === 'aktif');
     return firstActive || { id: 'op-default', name: 'Operator Warung', status: 'aktif' };
   }, [operators, activeOperatorId]);
+
+  // Helper Enqueue Sinkronisasi Offline-First (Fase 3)
+  const enqueueSync = useCallback(
+    (operationType, entityType, entityId, payload) => {
+      if (!ownerUid) return;
+      enqueueOperation({
+        operationType,
+        entityType,
+        entityId,
+        payload,
+        ownerUid,
+        operatorId: activeOperator?.id || 'op-default',
+        operatorName: activeOperator?.name || 'Operator Warung',
+      })
+        .then(() => {
+          triggerSyncNow({ ownerUid });
+        })
+        .catch((err) => {
+          console.warn(`[Sync] Enqueue failed for ${entityType} ${operationType}:`, err);
+        });
+    },
+    [ownerUid, activeOperator]
+  );
+
+  // Helper Penerapan Pembaruan Data Cloud (Pull Bi-directional) dengan Perlindungan Konflik
+  const applyCloudUpdates = useCallback((pulledData) => {
+    if (!pulledData || typeof pulledData !== 'object') return;
+
+    // 0. Rekonsiliasi Penghapusan Remote (Multi-Device Deletions)
+    if (Array.isArray(pulledData.deletions) && pulledData.deletions.length > 0) {
+      const delMap = new Map();
+      for (const d of pulledData.deletions) {
+        if (!delMap.has(d.entityType)) delMap.set(d.entityType, new Map());
+        delMap.get(d.entityType).set(d.entityId, d.syncedAt);
+      }
+
+      const shouldRemove = (item, entityType) => {
+        const typeMap = delMap.get(entityType);
+        if (!typeMap || !typeMap.has(item.id)) return false;
+        const syncedAt = typeMap.get(item.id);
+        // Jika item lokal memiliki updatedAt yang lebih baru dari tanggal penghapusan, pertahankan item lokal
+        if (item.updatedAt && syncedAt && item.updatedAt > syncedAt) {
+          return false;
+        }
+        return true;
+      };
+
+      if (delMap.has('suppliers')) {
+        setStores((prev) => prev.filter((s) => !shouldRemove(s, 'suppliers')));
+      }
+      if (delMap.has('products')) {
+        setProducts((prev) => prev.filter((p) => !shouldRemove(p, 'products')));
+      }
+      if (delMap.has('orders')) {
+        setOrders((prev) => prev.filter((o) => !shouldRemove(o, 'orders')));
+      }
+      if (delMap.has('shortages')) {
+        setShortages((prev) => prev.filter((sh) => !shouldRemove(sh, 'shortages')));
+      }
+      if (delMap.has('visits')) {
+        setVisits((prev) => prev.filter((v) => !shouldRemove(v, 'visits')));
+      }
+      if (delMap.has('digital_transactions')) {
+        setDigitalTransactions((prev) => prev.filter((t) => !shouldRemove(t, 'digital_transactions')));
+      }
+      if (delMap.has('debts')) {
+        setDebts((prev) => prev.filter((d) => !shouldRemove(d, 'debts')));
+      }
+    }
+
+    // 1. Toko Pemasok (suppliers)
+    if (Array.isArray(pulledData.suppliers) && pulledData.suppliers.length > 0) {
+      setStores((prev) => {
+        const map = new Map(prev.map((s) => [s.id, s]));
+        for (const remote of pulledData.suppliers) {
+          const local = map.get(remote.id);
+          if (!local || (remote.updatedAt && (!local.updatedAt || remote.updatedAt > local.updatedAt))) {
+            map.set(remote.id, migrateStore(remote));
+          }
+        }
+        return Array.from(map.values()).filter(Boolean);
+      });
+    }
+
+    // 2. Master Barang (products)
+    if (Array.isArray(pulledData.products) && pulledData.products.length > 0) {
+      setProducts((prev) => {
+        const map = new Map(prev.map((p) => [p.id, p]));
+        for (const remote of pulledData.products) {
+          const local = map.get(remote.id);
+          if (!local || (remote.updatedAt && (!local.updatedAt || remote.updatedAt > local.updatedAt))) {
+            map.set(remote.id, stripBuyOneGetOne(migrateProduct(remote)));
+          }
+        }
+        return Array.from(map.values()).filter(Boolean);
+      });
+    }
+
+    // 3. Stok Fisik (stocks)
+    if (Array.isArray(pulledData.stocks) && pulledData.stocks.length > 0) {
+      setStocks((prev) => {
+        const map = new Map(prev.map((s) => [s.productId, s]));
+        for (const remote of pulledData.stocks) {
+          const pid = remote.productId || remote.id;
+          const local = map.get(pid);
+          if (!local || (remote.updatedAt && (!local.updatedAt || remote.updatedAt > local.updatedAt))) {
+            map.set(pid, {
+              id: remote.id || (local ? local.id : uid('k-')),
+              productId: pid,
+              quantity: round2(Number(remote.quantity) || 0),
+              sellingPrice: Number(remote.sellingPrice) || 0,
+              sellingPrices: remote.sellingPrices || (local ? local.sellingPrices : {}),
+              note: remote.note || '',
+            });
+          }
+        }
+        return Array.from(map.values());
+      });
+    }
+
+    // 4. Pesanan (orders)
+    if (Array.isArray(pulledData.orders) && pulledData.orders.length > 0) {
+      setOrders((prev) => {
+        const map = new Map(prev.map((o) => [o.id, o]));
+        for (const remote of pulledData.orders) {
+          const local = map.get(remote.id);
+          if (!local || (remote.updatedAt && (!local.updatedAt || remote.updatedAt > local.updatedAt))) {
+            map.set(remote.id, migrateOrder(remote));
+          }
+        }
+        return Array.from(map.values()).filter(Boolean);
+      });
+    }
+
+    // 5. Shortages (kekurangan barang)
+    if (Array.isArray(pulledData.shortages) && pulledData.shortages.length > 0) {
+      setShortages((prev) => {
+        const map = new Map(prev.map((s) => [s.id, s]));
+        for (const remote of pulledData.shortages) {
+          const local = map.get(remote.id);
+          if (!local || (remote.updatedAt && (!local.updatedAt || remote.updatedAt > local.updatedAt))) {
+            map.set(remote.id, migrateShortage(remote));
+          }
+        }
+        return Array.from(map.values()).filter(Boolean);
+      });
+    }
+
+    // 6. Kunjungan (visits)
+    if (Array.isArray(pulledData.visits) && pulledData.visits.length > 0) {
+      setVisits((prev) => {
+        const map = new Map(prev.map((v) => [v.id, v]));
+        for (const remote of pulledData.visits) {
+          const local = map.get(remote.id);
+          if (!local || (remote.updatedAt && (!local.updatedAt || remote.updatedAt > local.updatedAt))) {
+            map.set(remote.id, migrateVisit(remote));
+          }
+        }
+        return Array.from(map.values()).filter(Boolean);
+      });
+    }
+
+    // 7. Transaksi Digital (digital_transactions)
+    if (Array.isArray(pulledData.digital_transactions) && pulledData.digital_transactions.length > 0) {
+      setDigitalTransactions((prev) => {
+        const map = new Map(prev.map((t) => [t.id, t]));
+        for (const remote of pulledData.digital_transactions) {
+          const local = map.get(remote.id);
+          if (!local || (remote.updatedAt && (!local.updatedAt || remote.updatedAt > local.updatedAt))) {
+            map.set(remote.id, migrateDigitalTransaction(remote));
+          }
+        }
+        return Array.from(map.values()).filter(Boolean);
+      });
+    }
+
+    // 8. Hutang-Piutang (debts)
+    if (Array.isArray(pulledData.debts) && pulledData.debts.length > 0) {
+      setDebts((prev) => {
+        const map = new Map(prev.map((d) => [d.id, d]));
+        for (const remote of pulledData.debts) {
+          const local = map.get(remote.id);
+          if (!local || (remote.updatedAt && (!local.updatedAt || remote.updatedAt > local.updatedAt))) {
+            map.set(remote.id, migrateDebt(remote));
+          }
+        }
+        return Array.from(map.values()).filter(Boolean);
+      });
+    }
+
+    // 9. Pengaturan (meta_settings)
+    if (pulledData.meta_settings && typeof pulledData.meta_settings === 'object') {
+      const remoteSettings = pulledData.meta_settings;
+      setSettings((prev) => {
+        if (!prev.updatedAt || (remoteSettings.updatedAt && remoteSettings.updatedAt > prev.updatedAt)) {
+          return { ...prev, ...remoteSettings };
+        }
+        return prev;
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!ownerUid) return;
+    return registerCloudUpdateHandler((pulledData) => {
+      applyCloudUpdates(pulledData);
+    });
+  }, [ownerUid, applyCloudUpdates]);
 
   const addActivityLog = useCallback(
     ({ title, desc, timestamp, type, operator }) => {
@@ -855,6 +1126,7 @@ export function AppProvider({ children }) {
         phone: String(phone).trim(),
         address: String(address).trim(),
         note: String(note).trim(),
+        sales: Array.isArray(isObj ? input.sales : extra.sales) ? (isObj ? input.sales : extra.sales) : [],
         createdAt: nowIso,
         updatedAt: nowIso,
       };
@@ -865,26 +1137,12 @@ export function AppProvider({ children }) {
         type: 'store_add',
       });
 
-      // FASE 3A: Enqueue ke Offline Queue & Picu Sinkronisasi
-      if (ownerUid) {
-        enqueueOperation({
-          operationType: 'CREATE',
-          entityType: 'suppliers',
-          entityId: store.id,
-          payload: store,
-          ownerUid,
-          operatorId: activeOperator.id,
-          operatorName: activeOperator.name,
-        }).then(() => {
-          triggerSyncNow({ ownerUid });
-        }).catch((err) => {
-          console.error('[Sync] Gagal enqueue create supplier:', err);
-        });
-      }
+      // FASE 3: Enqueue ke Offline Queue & Picu Sinkronisasi
+      enqueueSync('CREATE', 'suppliers', store.id, store);
 
       return store;
     },
-    [stores, addActivityLog, ownerUid, activeOperator]
+    [stores, addActivityLog, enqueueSync]
   );
 
   const updateStore = useCallback(
@@ -918,26 +1176,14 @@ export function AppProvider({ children }) {
         type: 'store_edit',
       });
 
-      // FASE 3A: Enqueue ke Offline Queue & Picu Sinkronisasi
-      if (ownerUid && updatedStore) {
-        enqueueOperation({
-          operationType: 'UPDATE',
-          entityType: 'suppliers',
-          entityId: id,
-          payload: updatedStore,
-          ownerUid,
-          operatorId: activeOperator.id,
-          operatorName: activeOperator.name,
-        }).then(() => {
-          triggerSyncNow({ ownerUid });
-        }).catch((err) => {
-          console.error('[Sync] Gagal enqueue update supplier:', err);
-        });
+      // FASE 3: Enqueue ke Offline Queue & Picu Sinkronisasi
+      if (updatedStore) {
+        enqueueSync('UPDATE', 'suppliers', id, updatedStore);
       }
 
       return { ok: true, reason: '' };
     },
-    [stores, addActivityLog, ownerUid, activeOperator]
+    [stores, addActivityLog, enqueueSync]
   );
 
   const deleteStore = useCallback(
@@ -948,8 +1194,18 @@ export function AppProvider({ children }) {
         return { ok: false, reason: `Toko masih memiliki ${count} pesanan. Hapus tidak diizinkan demi keamanan data.` };
       }
       setStores((prev) => prev.filter((s) => s.id !== id));
+      const targetSalesIds = new Set((target?.sales || []).map((sl) => sl.id));
       setProducts((prev) =>
-        prev.map((p) => (p.storeIds.includes(id) ? { ...p, storeIds: p.storeIds.filter((x) => x !== id) } : p))
+        prev.map((p) => {
+          let updated = p;
+          if (p.storeIds.includes(id)) {
+            updated = { ...updated, storeIds: updated.storeIds.filter((x) => x !== id) };
+          }
+          if (p.salesId && targetSalesIds.has(p.salesId)) {
+            updated = { ...updated, salesId: null };
+          }
+          return updated;
+        })
       );
       setStorePrices((prev) => prev.filter((x) => x.storeId !== id));
       if (target) {
@@ -958,28 +1214,156 @@ export function AppProvider({ children }) {
           desc: `Toko “${target.name}” berhasil dihapus`,
           type: 'store_delete',
         });
-      }
-
-      // FASE 3A: Enqueue ke Offline Queue & Picu Sinkronisasi
-      if (ownerUid && target) {
-        enqueueOperation({
-          operationType: 'DELETE',
-          entityType: 'suppliers',
-          entityId: id,
-          payload: { id, name: target.name },
-          ownerUid,
-          operatorId: activeOperator.id,
-          operatorName: activeOperator.name,
-        }).then(() => {
-          triggerSyncNow({ ownerUid });
-        }).catch((err) => {
-          console.error('[Sync] Gagal enqueue delete supplier:', err);
-        });
+        enqueueSync('DELETE', 'suppliers', id, { id, name: target.name });
       }
 
       return { ok: true };
     },
-    [orders, stores, addActivityLog, ownerUid, activeOperator]
+    [orders, stores, addActivityLog, enqueueSync]
+  );
+
+  /* ---------- Sales / Divisi per Toko Utama ---------- */
+  const addStoreSales = useCallback(
+    (storeId, salesInput) => {
+      const targetStore = stores.find((s) => s.id === storeId);
+      if (!targetStore) {
+        return { ok: false, reason: 'Toko pemasok tidak ditemukan.' };
+      }
+      const name = String(salesInput?.name || '').trim();
+      if (!name) {
+        return { ok: false, reason: 'Nama sales / divisi wajib diisi.' };
+      }
+      const nowIso = new Date().toISOString();
+      const newSales = {
+        id: salesInput.id || uid('sls-'),
+        name,
+        contact: String(salesInput.contact || '').trim(),
+        products: String(salesInput.products || '').trim(),
+        notes: String(salesInput.notes || salesInput.note || '').trim(),
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      const updatedStore = {
+        ...targetStore,
+        sales: [...(Array.isArray(targetStore.sales) ? targetStore.sales : []), newSales],
+        updatedAt: nowIso,
+      };
+
+      setStores((prev) =>
+        prev.map((s) => (s.id !== storeId ? s : updatedStore))
+      );
+
+      enqueueSync('UPDATE', 'suppliers', storeId, updatedStore);
+
+      addActivityLog({
+        title: 'Sales / Divisi Ditambahkan',
+        desc: `Sales “${name}” berhasil ditambahkan untuk toko “${targetStore.name}”`,
+        type: 'store_edit',
+      });
+      pushToast(`Sales “${name}” berhasil ditambahkan`);
+      return { ok: true, sales: newSales };
+    },
+    [stores, addActivityLog, pushToast, enqueueSync]
+  );
+
+  const updateStoreSales = useCallback(
+    (storeId, salesId, updates) => {
+      const targetStore = stores.find((s) => s.id === storeId);
+      if (!targetStore) {
+        return { ok: false, reason: 'Toko pemasok tidak ditemukan.' };
+      }
+      const currentSales = Array.isArray(targetStore.sales) ? targetStore.sales : [];
+      const targetSales = currentSales.find((sl) => sl.id === salesId);
+      if (!targetSales) {
+        return { ok: false, reason: 'Data sales tidak ditemukan.' };
+      }
+
+      if (updates.name !== undefined) {
+        const name = String(updates.name).trim();
+        if (!name) {
+          return { ok: false, reason: 'Nama sales / divisi tidak boleh kosong.' };
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      let updatedSales = null;
+
+      const salesList = Array.isArray(targetStore.sales) ? targetStore.sales : [];
+      const updatedSalesList = salesList.map((sl) => {
+        if (sl.id !== salesId) return sl;
+        updatedSales = {
+          ...sl,
+          ...updates,
+          name: updates.name !== undefined ? String(updates.name).trim() : sl.name,
+          contact: updates.contact !== undefined ? String(updates.contact).trim() : sl.contact,
+          products: updates.products !== undefined ? String(updates.products).trim() : sl.products,
+          notes: updates.notes !== undefined ? String(updates.notes).trim() : (updates.note !== undefined ? String(updates.note).trim() : sl.notes),
+          updatedAt: nowIso,
+        };
+        return updatedSales;
+      });
+
+      const updatedStore = {
+        ...targetStore,
+        sales: updatedSalesList,
+        updatedAt: nowIso,
+      };
+
+      setStores((prev) =>
+        prev.map((s) => (s.id !== storeId ? s : updatedStore))
+      );
+
+      enqueueSync('UPDATE', 'suppliers', storeId, updatedStore);
+
+      addActivityLog({
+        title: 'Sales / Divisi Diperbarui',
+        desc: `Data sales “${updatedSales?.name || targetSales.name}” toko “${targetStore.name}” diperbarui`,
+        type: 'store_edit',
+      });
+      pushToast(`Data sales “${updatedSales?.name || targetSales.name}” berhasil diperbarui`);
+      return { ok: true, sales: updatedSales };
+    },
+    [stores, addActivityLog, pushToast, enqueueSync]
+  );
+
+  const deleteStoreSales = useCallback(
+    (storeId, salesId) => {
+      const targetStore = stores.find((s) => s.id === storeId);
+      if (!targetStore) {
+        return { ok: false, reason: 'Toko pemasok tidak ditemukan.' };
+      }
+      const currentSales = Array.isArray(targetStore.sales) ? targetStore.sales : [];
+      const targetSales = currentSales.find((sl) => sl.id === salesId);
+      if (!targetSales) {
+        return { ok: false, reason: 'Data sales tidak ditemukan.' };
+      }
+
+      const nowIso = new Date().toISOString();
+      const updatedStore = {
+        ...targetStore,
+        sales: currentSales.filter((sl) => sl.id !== salesId),
+        updatedAt: nowIso,
+      };
+
+      setStores((prev) =>
+        prev.map((s) => (s.id !== storeId ? s : updatedStore))
+      );
+      setProducts((prev) =>
+        prev.map((p) => (p.salesId === salesId ? { ...p, salesId: null } : p))
+      );
+
+      enqueueSync('UPDATE', 'suppliers', storeId, updatedStore);
+
+      addActivityLog({
+        title: 'Sales / Divisi Dihapus',
+        desc: `Sales “${targetSales.name}” toko “${targetStore.name}” berhasil dihapus`,
+        type: 'store_edit',
+      });
+      pushToast(`Sales “${targetSales.name}” berhasil dihapus`);
+      return { ok: true };
+    },
+    [stores, addActivityLog, pushToast, enqueueSync]
   );
 
   /* ---------- Barang ---------- */
@@ -1051,6 +1435,10 @@ export function AppProvider({ children }) {
         id: pid,
         units,
         storeIds: Array.isArray(productData.storeIds) ? productData.storeIds : [],
+        salesId: productData.salesId ? String(productData.salesId).trim() : '',
+        salesIds: Array.isArray(productData.salesIds)
+          ? productData.salesIds
+          : (productData.salesId ? [productData.salesId] : []),
         createdAt: new Date().toISOString(),
       };
 
@@ -1065,6 +1453,9 @@ export function AppProvider({ children }) {
 
       setProducts((prev) => [...prev, product]);
       setStocks((prev) => [stock, ...prev]);
+
+      enqueueSync('CREATE', 'products', product.id, product);
+      enqueueSync('CREATE', 'stocks', stock.productId, stock);
 
       if (baseQty > 0) {
         const movement = {
@@ -1081,6 +1472,7 @@ export function AppProvider({ children }) {
           timestamp: new Date().toISOString(),
         };
         setMovements((prev) => [movement, ...prev]);
+        enqueueSync('CREATE', 'movements', movement.id, movement);
       }
 
       addActivityLog({
@@ -1091,7 +1483,7 @@ export function AppProvider({ children }) {
 
       return { product, stock };
     },
-    [addActivityLog]
+    [addActivityLog, enqueueSync]
   );
 
   // Pengecekan referensi transaksi riwayat barang (pesanan, mutasi stok, kekurangan, stok aktif)
@@ -1138,6 +1530,8 @@ export function AppProvider({ children }) {
       setStorePrices((prev) => prev.filter((x) => x.productId !== id));
       setPriceHistory((prev) => prev.filter((x) => x.productId !== id));
 
+      enqueueSync('DELETE', 'products', id, { id, name: target.name });
+
       addActivityLog({
         title: 'Barang Dihapus Permanen',
         desc: `Barang “${target.name}” (tanpa riwayat transaksi) berhasil dihapus permanen`,
@@ -1146,7 +1540,7 @@ export function AppProvider({ children }) {
 
       return { ok: true };
     },
-    [products, checkProductReferences, addActivityLog]
+    [products, checkProductReferences, addActivityLog, enqueueSync]
   );
 
   const archiveProduct = useCallback(
@@ -1154,13 +1548,21 @@ export function AppProvider({ children }) {
       const target = products.find((p) => p.id === id);
       if (!target) return { ok: false, reason: 'Barang tidak ditemukan.' };
 
+      const now = new Date().toISOString();
       setProducts((prev) =>
         prev.map((p) =>
           p.id === id
-            ? { ...p, archived: shouldArchive, active: !shouldArchive }
+            ? { ...p, archived: shouldArchive, active: !shouldArchive, updatedAt: now }
             : p
         )
       );
+
+      enqueueSync('UPDATE', 'products', id, {
+        ...target,
+        archived: shouldArchive,
+        active: !shouldArchive,
+        updatedAt: now,
+      });
 
       addActivityLog({
         title: shouldArchive ? 'Barang Diarsipkan' : 'Barang Dipulihkan dari Arsip',
@@ -1174,7 +1576,7 @@ export function AppProvider({ children }) {
 
       return { ok: true, archived: shouldArchive };
     },
-    [products, addActivityLog]
+    [products, addActivityLog, enqueueSync]
   );
 
   const updateProduct = useCallback(
@@ -1187,10 +1589,12 @@ export function AppProvider({ children }) {
           type: 'product_edit',
         });
       }
+      const now = new Date().toISOString();
+      let updatedProduct = null;
       setProducts((prev) =>
         prev.map((p) => {
           if (p.id !== id) return p;
-          const merged = { ...p, ...patch, id: p.id }; // ID dipertahankan mutlak
+          const merged = { ...p, ...patch, id: p.id, updatedAt: now }; // ID dipertahankan mutlak
           // Pastikan daftar satuan tetap valid dan memiliki satuan dasar factor 1
           if (Array.isArray(merged.units) && merged.units.length > 0) {
             const hasBase = merged.units.some((u) => Number(u?.factor) === 1);
@@ -1198,11 +1602,15 @@ export function AppProvider({ children }) {
               merged.units = [{ ...merged.units[0], factor: 1 }, ...merged.units.slice(1)];
             }
           }
+          updatedProduct = merged;
           return merged;
         })
       );
+      if (updatedProduct) {
+        enqueueSync('UPDATE', 'products', id, updatedProduct);
+      }
     },
-    [products, addActivityLog]
+    [products, addActivityLog, enqueueSync]
   );
 
   const deleteStock = useCallback((id) => {
@@ -1213,6 +1621,8 @@ export function AppProvider({ children }) {
   // Harga satuan dasar dipakai sebagai harga jual utama. Harga beli pemasok tidak disentuh.
   const updateStockPrices = useCallback(
     (productId, entries) => {
+      const now = new Date().toISOString();
+      let updatedStock = null;
       setStocks((prev) =>
         prev.map((s) => {
           if (s.productId !== productId) return s;
@@ -1227,11 +1637,20 @@ export function AppProvider({ children }) {
           const units = (product && product.units) || [];
           const base = units.find((u) => Number(u.factor) === 1) || units[0];
           const main = base && sellingPrices[base.id] != null ? sellingPrices[base.id] : s.sellingPrice;
-          return { ...s, sellingPrices, sellingPrice: Number(main) || 0 };
+          updatedStock = {
+            ...s,
+            sellingPrices,
+            sellingPrice: Number(main) || 0,
+            updatedAt: now,
+          };
+          return updatedStock;
         })
       );
+      if (updatedStock) {
+        enqueueSync('UPDATE', 'stocks', productId, updatedStock);
+      }
     },
-    [products]
+    [products, enqueueSync]
   );
 
   /* ---------- Pesanan ---------- */
@@ -1276,6 +1695,8 @@ export function AppProvider({ children }) {
         cancelReason: '',
       };
       setOrders((prev) => [order, ...prev]);
+      enqueueSync('CREATE', 'orders', order.id, order);
+
       addActivityLog({
         title: 'Pesanan Baru Dibuat',
         desc: `Pesanan ${order.id} dibuat untuk ${storeById(storeId)?.name || 'toko pemasok'} (${order.totalItems} barang)`,
@@ -1283,7 +1704,7 @@ export function AppProvider({ children }) {
       });
       return order;
     },
-    [orders, products, addActivityLog, storeById]
+    [orders, products, addActivityLog, storeById, enqueueSync]
   );
 
   const receiveOrderPartial = useCallback(
@@ -1405,21 +1826,33 @@ export function AppProvider({ children }) {
         nextItems.reduce((acc, it) => acc + (Number(it.receivedQuantity) || 0) * (Number(it.priceActual) || 0), 0)
       );
 
+      const updatedOrder = {
+        ...target,
+        items: nextItems,
+        status: newStatus,
+        receipts: updatedReceipts,
+        receipt: newReceipt,
+        totalCost: newTotalCost,
+        updatedAt: now,
+      };
+
       setOrders((prev) =>
-        prev.map((o) =>
-          o.id === orderId
-            ? {
-                ...o,
-                items: nextItems,
-                status: newStatus,
-                receipts: updatedReceipts,
-                receipt: newReceipt,
-                totalCost: newTotalCost,
-                updatedAt: now,
-              }
-            : o
-        )
+        prev.map((o) => (o.id !== orderId ? o : updatedOrder))
       );
+      enqueueSync('UPDATE', 'orders', orderId, updatedOrder);
+
+      for (const mov of movementsToAdd) {
+        enqueueSync('CREATE', 'movements', mov.id, mov);
+      }
+      for (const upd of stockUpdates) {
+        const curStock = stocks.find((s) => s.productId === upd.productId);
+        const curQty = curStock ? Number(curStock.quantity) || 0 : 0;
+        enqueueSync('UPDATE', 'stocks', upd.productId, {
+          productId: upd.productId,
+          quantity: round2(curQty + upd.quantity),
+          updatedAt: now,
+        });
+      }
 
       const storeName = storeById(target.storeId)?.name || 'toko pemasok';
       if (newStatus === 'selesai') {
@@ -1438,7 +1871,7 @@ export function AppProvider({ children }) {
 
       return { ok: true, status: newStatus, receipt: newReceipt };
     },
-    [orders, products, stocks, upsertStock, baseNameOf, storeById, addActivityLog]
+    [orders, products, stocks, upsertStock, baseNameOf, storeById, addActivityLog, enqueueSync]
   );
 
   const cancelOrder = useCallback(
@@ -1473,20 +1906,19 @@ export function AppProvider({ children }) {
         };
       });
 
+      const cancelledOrder = {
+        ...target,
+        items: nextItems,
+        status: 'batal',
+        cancelReason: trimmedReason,
+        cancelledAt: cancelTime,
+        updatedAt: cancelTime,
+      };
+
       setOrders((prev) =>
-        prev.map((o) =>
-          o.id === orderId
-            ? {
-                ...o,
-                items: nextItems,
-                status: 'batal',
-                cancelReason: trimmedReason,
-                cancelledAt: cancelTime,
-                updatedAt: cancelTime,
-              }
-            : o
-        )
+        prev.map((o) => (o.id !== orderId ? o : cancelledOrder))
       );
+      enqueueSync('UPDATE', 'orders', orderId, cancelledOrder);
 
       const storeName = storeById(target.storeId)?.name || 'toko pemasok';
       addActivityLog({
@@ -1499,7 +1931,7 @@ export function AppProvider({ children }) {
 
       return { ok: true, hasPartialReceipts: hasReceivedAny };
     },
-    [orders, storeById, addActivityLog]
+    [orders, storeById, addActivityLog, enqueueSync]
   );
 
   // Selesaikan pesanan dengan mencatat sisa barang yang belum terpenuhi sebagai kekurangan
@@ -1571,20 +2003,23 @@ export function AppProvider({ children }) {
           }
           return updated;
         });
+
+        for (const ns of newShortages) {
+          enqueueSync('CREATE', 'shortages', ns.id, ns);
+        }
       }
 
+      const completedOrder = {
+        ...target,
+        status: 'selesai',
+        completionNote: reason || note || '',
+        updatedAt: now,
+      };
+
       setOrders((prev) =>
-        prev.map((o) =>
-          o.id === orderId
-            ? {
-                ...o,
-                status: 'selesai',
-                completionNote: reason || note || '',
-                updatedAt: now,
-              }
-            : o
-        )
+        prev.map((o) => (o.id !== orderId ? o : completedOrder))
       );
+      enqueueSync('UPDATE', 'orders', orderId, completedOrder);
 
       addActivityLog({
         title: 'Pesanan Selesai dengan Kekurangan',
@@ -1603,7 +2038,7 @@ export function AppProvider({ children }) {
         shortagesCount: newShortages.length,
       };
     },
-    [orders, storeById, addActivityLog]
+    [orders, storeById, addActivityLog, enqueueSync]
   );
 
   const completeOrder = useCallback(
@@ -1675,13 +2110,16 @@ export function AppProvider({ children }) {
     const diffBase = round2(afterBase - beforeBase);
     const now = data.timestamp || new Date().toISOString();
 
+    const updatedStock = {
+      productId: data.productId,
+      quantity: afterBase,
+      sellingPrice: stock ? stock.sellingPrice : product.units[0] ? Number(product.units[0].price) : 0,
+      note: stock ? stock.note : '',
+      updatedAt: now,
+    };
+
     setStocks((prev) =>
-      upsertStock(prev, {
-        productId: data.productId,
-        quantity: afterBase,
-        sellingPrice: stock ? stock.sellingPrice : product.units[0] ? Number(product.units[0].price) : 0,
-        note: stock ? stock.note : '',
-      }, 'set')
+      upsertStock(prev, updatedStock, 'set')
     );
 
     const movement = {
@@ -1698,6 +2136,9 @@ export function AppProvider({ children }) {
       timestamp: now,
     };
     setMovements((prev) => [movement, ...prev]);
+
+    enqueueSync('UPDATE', 'stocks', data.productId, updatedStock);
+    enqueueSync('CREATE', 'movements', movement.id, movement);
 
     if (type === 'masuk') {
       addActivityLog({
@@ -1723,7 +2164,7 @@ export function AppProvider({ children }) {
     }
 
     return { ok: true, movement, stockQuantity: afterBase };
-  }, [products, stocks, upsertStock, baseNameOf, addActivityLog]);
+  }, [products, stocks, upsertStock, baseNameOf, addActivityLog, enqueueSync]);
 
   const addBarangMasuk = useCallback((data) => applyMovement('masuk', data), [applyMovement]);
   const addBarangKeluar = useCallback((data) => applyMovement('keluar', data), [applyMovement]);
@@ -1796,6 +2237,13 @@ export function AppProvider({ children }) {
         };
         setMovements((prev) => [movement, ...prev]);
 
+        enqueueSync('UPDATE', 'stocks', target.productId, {
+          productId: target.productId,
+          quantity: afterBase,
+          updatedAt: now,
+        });
+        enqueueSync('CREATE', 'movements', movement.id, movement);
+
         addActivityLog({
           title: 'Pembelian Ulang Selesai Diterima',
           desc: `${formatQty(receivedQty)} ${target.unit} “${target.productNameSnapshot}” telah tiba & masuk stok`,
@@ -1863,9 +2311,13 @@ export function AppProvider({ children }) {
         })
       );
 
+      if (updatedShortage) {
+        enqueueSync('UPDATE', 'shortages', shortageId, updatedShortage);
+      }
+
       return { ok: true, shortage: updatedShortage, repurchase };
     },
-    [shortages, products, stocks, upsertStock, baseNameOf, addActivityLog]
+    [shortages, products, stocks, upsertStock, baseNameOf, addActivityLog, enqueueSync]
   );
 
   const receiveRepurchase = useCallback(
@@ -1932,6 +2384,13 @@ export function AppProvider({ children }) {
       };
       setMovements((prev) => [movement, ...prev]);
 
+      enqueueSync('UPDATE', 'stocks', target.productId, {
+        productId: target.productId,
+        quantity: afterBase,
+        updatedAt: now,
+      });
+      enqueueSync('CREATE', 'movements', movement.id, movement);
+
       const newReceipt = {
         id: uid('rpr-'),
         receivedQuantity: recQty,
@@ -1985,6 +2444,10 @@ export function AppProvider({ children }) {
         })
       );
 
+      if (updatedShortage) {
+        enqueueSync('UPDATE', 'shortages', shortageId, updatedShortage);
+      }
+
       addActivityLog({
         title: isComplete ? 'Pembelian Ulang Selesai Diterima' : 'Penerimaan Pembelian Ulang Sebagian',
         desc: `+${formatQty(recQty)} ${target.unit} “${target.productNameSnapshot}” telah tiba & masuk stok (${formatQty(newRecQty)} dari ${formatQty(rep.quantity)} diterima)`,
@@ -2000,7 +2463,7 @@ export function AppProvider({ children }) {
         totalReceived: newRecQty,
       };
     },
-    [shortages, products, stocks, upsertStock, baseNameOf, addActivityLog]
+    [shortages, products, stocks, upsertStock, baseNameOf, addActivityLog, enqueueSync]
   );
 
   const markShortageSold = useCallback(
@@ -2102,6 +2565,10 @@ export function AppProvider({ children }) {
       const now = new Date().toISOString();
       const newVisit = {
         id: data.id || uid('vst-'),
+        storeId: data.storeId ? String(data.storeId).trim() : '',
+        salesId: data.salesId ? String(data.salesId).trim() : '',
+        storeName: data.storeName ? String(data.storeName).trim() : '',
+        salesName: data.salesName ? String(data.salesName).trim() : '',
         name: name || agenda,
         target: name || agenda,
         agenda: agenda || name,
@@ -2120,6 +2587,7 @@ export function AppProvider({ children }) {
       };
 
       setVisits((prev) => [newVisit, ...prev]);
+      enqueueSync('CREATE', 'visits', newVisit.id, newVisit);
 
       addActivityLog({
         title: 'Jadwal Kunjungan Dibuat',
@@ -2131,7 +2599,7 @@ export function AppProvider({ children }) {
       pushToast(`Jadwal kunjungan “${newVisit.name}” berhasil ditambahkan`);
       return { ok: true, visit: newVisit };
     },
-    [addActivityLog, pushToast]
+    [addActivityLog, pushToast, enqueueSync]
   );
 
   // Edit / perbarui rincian jadwal kunjungan
@@ -2160,6 +2628,10 @@ export function AppProvider({ children }) {
           updatedVisit = {
             ...v,
             ...updates,
+            storeId: updates.storeId !== undefined ? String(updates.storeId).trim() : v.storeId,
+            salesId: updates.salesId !== undefined ? String(updates.salesId).trim() : v.salesId,
+            storeName: updates.storeName !== undefined ? String(updates.storeName).trim() : v.storeName,
+            salesName: updates.salesName !== undefined ? String(updates.salesName).trim() : v.salesName,
             name: updates.name !== undefined ? String(updates.name).trim() : v.name,
             date: updates.date !== undefined ? String(updates.date).slice(0, 10) : v.date,
             time: updates.time !== undefined ? String(updates.time).trim() : v.time,
@@ -2174,30 +2646,69 @@ export function AppProvider({ children }) {
         })
       );
 
+      if (updatedVisit) {
+        enqueueSync('UPDATE', 'visits', id, updatedVisit);
+      }
+
       pushToast(`Jadwal kunjungan “${updatedVisit?.name || target.name}” berhasil diperbarui`);
       return { ok: true, visit: updatedVisit };
     },
-    [visits, pushToast]
+    [visits, pushToast, enqueueSync]
   );
 
   // Selesaikan kunjungan & catat hasil kunjungan + otomasi jadwal berikutnya jika berulang
   const completeVisit = useCallback(
-    (id, { actualDate, outcome = '', notes = '', followUp = '', nextVisitDate = '' } = {}) => {
+    (
+      id,
+      {
+        actualDate,
+        outcome = '',
+        notes = '',
+        followUp = '',
+        nextVisitDate = '',
+        ordersPlaced = '',
+        pricePromoInfo = '',
+        unresolvedNotes = '',
+      } = {}
+    ) => {
       const target = visits.find((v) => v.id === id);
       if (!target) return { ok: false, reason: 'Kunjungan tidak ditemukan.' };
-      if (target.status === 'completed') {
-        return { ok: false, reason: 'Kunjungan ini sudah diselesaikan sebelumnya.' };
-      }
 
       const now = new Date().toISOString();
       const completion = {
         actualDate: actualDate ? String(actualDate).slice(0, 10) : getLocalDateString(),
-        completedAt: now,
+        completedAt: target.completion?.completedAt || now,
         outcome: String(outcome || '').trim(),
         notes: String(notes || '').trim(),
         followUp: String(followUp || '').trim(),
         nextVisitDate: nextVisitDate ? String(nextVisitDate).slice(0, 10) : '',
+        ordersPlaced: String(ordersPlaced || '').trim(),
+        pricePromoInfo: String(pricePromoInfo || '').trim(),
+        unresolvedNotes: String(unresolvedNotes || '').trim(),
       };
+
+      if (target.status === 'completed') {
+        let updatedVisit = null;
+        setVisits((prev) =>
+          prev.map((v) => {
+            if (v.id !== id) return v;
+            updatedVisit = {
+              ...v,
+              completion: {
+                ...v.completion,
+                ...completion,
+              },
+              updatedAt: now,
+            };
+            return updatedVisit;
+          })
+        );
+        if (updatedVisit) {
+          enqueueSync('UPDATE', 'visits', id, updatedVisit);
+        }
+        pushToast('Hasil realisasi kunjungan berhasil diperbarui');
+        return { ok: true, visit: updatedVisit };
+      }
 
       // Cek apakah ada jadwal pengulangan otomatis
       const recType = target.recurrence?.type || 'none';
@@ -2214,6 +2725,10 @@ export function AppProvider({ children }) {
         if (isAllowedByEnd) {
           nextVisitInstance = {
             id: uid('vst-'),
+            storeId: target.storeId || '',
+            salesId: target.salesId || '',
+            storeName: target.storeName || '',
+            salesName: target.salesName || '',
             name: target.name,
             type: target.type,
             date: resolvedNextDate,
@@ -2236,6 +2751,10 @@ export function AppProvider({ children }) {
         // Jika tidak berulang tapi pengguna memasukkan nextVisitDate secara manual
         nextVisitInstance = {
           id: uid('vst-'),
+          storeId: target.storeId || '',
+          salesId: target.salesId || '',
+          storeName: target.storeName || '',
+          salesName: target.salesName || '',
           name: target.name,
           type: target.type,
           date: completion.nextVisitDate,
@@ -2252,15 +2771,17 @@ export function AppProvider({ children }) {
         };
       }
 
+      const completedVisit = {
+        ...target,
+        status: 'completed',
+        completion,
+        updatedAt: now,
+      };
+
       setVisits((prev) => {
         const updatedList = prev.map((v) => {
           if (v.id !== id) return v;
-          return {
-            ...v,
-            status: 'completed',
-            completion,
-            updatedAt: now,
-          };
+          return completedVisit;
         });
 
         if (nextVisitInstance) {
@@ -2268,6 +2789,11 @@ export function AppProvider({ children }) {
         }
         return updatedList;
       });
+
+      enqueueSync('UPDATE', 'visits', id, completedVisit);
+      if (nextVisitInstance) {
+        enqueueSync('CREATE', 'visits', nextVisitInstance.id, nextVisitInstance);
+      }
 
       addActivityLog({
         title: 'Kunjungan Telah Selesai',
@@ -2279,7 +2805,7 @@ export function AppProvider({ children }) {
       pushToast(`Kunjungan “${target.name}” telah ditandai selesai`);
       return { ok: true, completedId: id, nextVisit: nextVisitInstance };
     },
-    [visits, addActivityLog, pushToast]
+    [visits, addActivityLog, pushToast, enqueueSync]
   );
 
   // Batalkan kunjungan
@@ -2289,17 +2815,17 @@ export function AppProvider({ children }) {
       if (!target) return { ok: false, reason: 'Kunjungan tidak ditemukan.' };
 
       const now = new Date().toISOString();
+      const cancelledVisit = {
+        ...target,
+        status: 'cancelled',
+        cancelReason: String(reason || 'Dibatalkan').trim(),
+        updatedAt: now,
+      };
+
       setVisits((prev) =>
-        prev.map((v) => {
-          if (v.id !== id) return v;
-          return {
-            ...v,
-            status: 'cancelled',
-            cancelReason: String(reason || 'Dibatalkan').trim(),
-            updatedAt: now,
-          };
-        })
+        prev.map((v) => (v.id !== id ? v : cancelledVisit))
       );
+      enqueueSync('UPDATE', 'visits', id, cancelledVisit);
 
       addActivityLog({
         title: 'Kunjungan Dibatalkan',
@@ -2311,7 +2837,7 @@ export function AppProvider({ children }) {
       pushToast(`Kunjungan “${target.name}” telah dibatalkan`);
       return { ok: true };
     },
-    [visits, addActivityLog, pushToast]
+    [visits, addActivityLog, pushToast, enqueueSync]
   );
 
   // Jadwalkan ulang (Reschedule)
@@ -2331,19 +2857,19 @@ export function AppProvider({ children }) {
         ? `Dijadwalkan ulang dari ${oldDate}: ${reason}`
         : `Dijadwalkan ulang dari ${oldDate}`;
 
+      const rescheduledVisit = {
+        ...target,
+        date: d,
+        time: newTime !== undefined ? String(newTime).trim() : target.time,
+        notes: target.notes ? `${target.notes} • ${rescheduleNote}` : rescheduleNote,
+        status: 'scheduled',
+        updatedAt: now,
+      };
+
       setVisits((prev) =>
-        prev.map((v) => {
-          if (v.id !== id) return v;
-          return {
-            ...v,
-            date: d,
-            time: newTime !== undefined ? String(newTime).trim() : v.time,
-            notes: v.notes ? `${v.notes} • ${rescheduleNote}` : rescheduleNote,
-            status: 'scheduled',
-            updatedAt: now,
-          };
-        })
+        prev.map((v) => (v.id !== id ? v : rescheduledVisit))
       );
+      enqueueSync('UPDATE', 'visits', id, rescheduledVisit);
 
       addActivityLog({
         title: 'Kunjungan Dijadwalkan Ulang',
@@ -2355,7 +2881,7 @@ export function AppProvider({ children }) {
       pushToast(`Kunjungan “${target.name}” berhasil dijadwalkan ulang ke ${d}`);
       return { ok: true, newDate: d };
     },
-    [visits, addActivityLog, pushToast]
+    [visits, addActivityLog, pushToast, enqueueSync]
   );
 
   // Hapus kunjungan secara permanen
@@ -2365,6 +2891,7 @@ export function AppProvider({ children }) {
       if (!target) return { ok: false, reason: 'Kunjungan tidak ditemukan.' };
 
       setVisits((prev) => prev.filter((v) => v.id !== id));
+      enqueueSync('DELETE', 'visits', id, { id, name: target.name });
 
       addActivityLog({
         title: 'Kunjungan Dihapus',
@@ -2376,7 +2903,7 @@ export function AppProvider({ children }) {
       pushToast(`Jadwal kunjungan “${target.name}” telah dihapus`);
       return { ok: true };
     },
-    [visits, addActivityLog, pushToast]
+    [visits, addActivityLog, pushToast, enqueueSync]
   );
 
   /* ---------- Catatan Transaksi Layanan Digital (Batch 6) ---------- */
@@ -2440,6 +2967,7 @@ export function AppProvider({ children }) {
       };
 
       setDigitalTransactions((prev) => [newTx, ...prev]);
+      enqueueSync('CREATE', 'digital_transactions', newTx.id, newTx);
 
       addActivityLog({
         title: 'Transaksi Digital Dicatat',
@@ -2451,7 +2979,7 @@ export function AppProvider({ children }) {
       pushToast(`Transaksi digital ${newTx.provider || newTx.type} berhasil dicatat`);
       return { ok: true, transaction: newTx };
     },
-    [addActivityLog, pushToast]
+    [addActivityLog, pushToast, enqueueSync]
   );
 
   // Perbarui transaksi digital
@@ -2494,10 +3022,14 @@ export function AppProvider({ children }) {
         })
       );
 
+      if (updatedTx) {
+        enqueueSync('UPDATE', 'digital_transactions', id, updatedTx);
+      }
+
       pushToast(`Transaksi digital berhasil diperbarui`);
       return { ok: true, transaction: updatedTx };
     },
-    [digitalTransactions, pushToast]
+    [digitalTransactions, pushToast, enqueueSync]
   );
 
   // Hapus transaksi digital
@@ -2507,6 +3039,7 @@ export function AppProvider({ children }) {
       if (!target) return { ok: false, reason: 'Transaksi digital tidak ditemukan.' };
 
       setDigitalTransactions((prev) => prev.filter((t) => t.id !== id));
+      enqueueSync('DELETE', 'digital_transactions', id, { id });
 
       addActivityLog({
         title: 'Transaksi Digital Dihapus',
@@ -2518,7 +3051,7 @@ export function AppProvider({ children }) {
       pushToast(`Transaksi digital berhasil dihapus`);
       return { ok: true };
     },
-    [digitalTransactions, addActivityLog, pushToast]
+    [digitalTransactions, addActivityLog, pushToast, enqueueSync]
   );
 
   // Ubah status transaksi digital (completed, pending, failed, cancelled)
@@ -2548,6 +3081,10 @@ export function AppProvider({ children }) {
         })
       );
 
+      if (updatedTx) {
+        enqueueSync('UPDATE', 'digital_transactions', id, updatedTx);
+      }
+
       addActivityLog({
         title: `Status Transaksi Digital: ${newStatus}`,
         desc: `${target.provider || target.type}: status diubah menjadi ${newStatus}.`,
@@ -2558,12 +3095,469 @@ export function AppProvider({ children }) {
       pushToast(`Status transaksi diubah menjadi ${newStatus}`);
       return { ok: true, transaction: updatedTx };
     },
-    [digitalTransactions, addActivityLog, pushToast]
+    [digitalTransactions, addActivityLog, pushToast, enqueueSync]
   );
 
-  const updateSettings = useCallback((patch) => {
-    setSettings((prev) => ({ ...prev, ...patch }));
+  /* =========================================================================
+     MODUL HUTANG-PIUTANG (DEBT & ACCOUNTS RECEIVABLE)
+     ========================================================================= */
+  const debtsSummary = useMemo(() => {
+    return summarizeDebts(debts);
+  }, [debts]);
+
+  const activeDebts = useMemo(() => {
+    return debts.filter((d) => calculateDebtRemaining(d) > 0);
+  }, [debts]);
+
+  const overdueDebts = useMemo(() => {
+    return debts.filter((d) => computeDebtStatus(d) === 'terlambat');
+  }, [debts]);
+
+  // Tambah catatan hutang / piutang baru
+  const createDebt = useCallback(
+    (data) => {
+      const val = validateDebtRecord(data);
+      if (!val.ok) {
+        return { ok: false, reason: val.reason };
+      }
+
+      const now = new Date().toISOString();
+      const newDebt = {
+        id: data.id || uid('dbt-'),
+        type: val.clean.type,
+        name: val.clean.name,
+        contact: String(data.contact || '').trim(),
+        amount: val.clean.amount,
+        date: val.clean.date,
+        dueDate: val.clean.dueDate || '',
+        notes: String(data.notes || '').trim(),
+        payments: [],
+        createdAt: data.createdAt || now,
+        updatedAt: now,
+      };
+
+      setDebts((prev) => [newDebt, ...prev]);
+      enqueueSync('CREATE', 'debts', newDebt.id, newDebt);
+
+      addActivityLog({
+        title: `Catatan ${newDebt.type === 'piutang' ? 'Piutang' : 'Hutang'} Baru`,
+        desc: `${newDebt.name} • ${rupiah(newDebt.amount)}${newDebt.dueDate ? ' (Tempo: ' + formatDateId(newDebt.dueDate) + ')' : ''}`,
+        type: 'debt_created',
+        timestamp: now,
+      });
+
+      pushToast(`Catatan ${newDebt.type === 'piutang' ? 'piutang' : 'hutang'} “${newDebt.name}” berhasil ditambahkan`);
+      return { ok: true, debt: newDebt };
+    },
+    [addActivityLog, pushToast, enqueueSync]
+  );
+
+  // Perbarui catatan hutang / piutang
+  const updateDebt = useCallback(
+    (id, updates) => {
+      const target = debts.find((d) => d.id === id);
+      if (!target) return { ok: false, reason: 'Catatan hutang/piutang tidak ditemukan.' };
+
+      const merged = { ...target, ...updates };
+      const val = validateDebtRecord(merged);
+      if (!val.ok) {
+        return { ok: false, reason: val.reason };
+      }
+
+      const totalPaid = calculateDebtTotalPaid(target);
+      if (val.clean.amount < totalPaid) {
+        return {
+          ok: false,
+          reason: `Nominal baru (${rupiah(val.clean.amount)}) tidak boleh lebih kecil dari total pembayaran yang sudah masuk (${rupiah(totalPaid)}).`,
+        };
+      }
+
+      const now = new Date().toISOString();
+      let updatedDebt = null;
+
+      setDebts((prev) =>
+        prev.map((d) => {
+          if (d.id !== id) return d;
+          updatedDebt = {
+            ...d,
+            ...updates,
+            name: val.clean.name,
+            type: val.clean.type,
+            amount: val.clean.amount,
+            date: val.clean.date,
+            dueDate: val.clean.dueDate,
+            contact: updates.contact !== undefined ? String(updates.contact).trim() : d.contact,
+            notes: updates.notes !== undefined ? String(updates.notes).trim() : d.notes,
+            updatedAt: now,
+          };
+          return updatedDebt;
+        })
+      );
+
+      if (updatedDebt) {
+        enqueueSync('UPDATE', 'debts', id, updatedDebt);
+      }
+
+      pushToast(`Catatan ${updatedDebt?.type === 'piutang' ? 'piutang' : 'hutang'} berhasil diperbarui`);
+      return { ok: true, debt: updatedDebt };
+    },
+    [debts, pushToast, enqueueSync]
+  );
+
+  // Hapus catatan hutang / piutang
+  const deleteDebt = useCallback(
+    (id) => {
+      const target = debts.find((d) => d.id === id);
+      if (!target) return { ok: false, reason: 'Catatan hutang/piutang tidak ditemukan.' };
+
+      setDebts((prev) => prev.filter((d) => d.id !== id));
+      enqueueSync('DELETE', 'debts', id, { id, name: target.name });
+
+      addActivityLog({
+        title: `Catatan ${target.type === 'piutang' ? 'Piutang' : 'Hutang'} Dihapus`,
+        desc: `${target.name} (${rupiah(target.amount)}) telah dihapus.`,
+        type: 'debt_deleted',
+        timestamp: new Date().toISOString(),
+      });
+
+      pushToast(`Catatan ${target.type === 'piutang' ? 'piutang' : 'hutang'} “${target.name}” telah dihapus`);
+      return { ok: true };
+    },
+    [debts, addActivityLog, pushToast, enqueueSync]
+  );
+
+  // Catat pembayaran cicilan / pelunasan
+  const addDebtPayment = useCallback(
+    (debtId, paymentData) => {
+      const target = debts.find((d) => d.id === debtId);
+      if (!target) return { ok: false, reason: 'Catatan hutang/piutang tidak ditemukan.' };
+
+      const val = validateDebtPayment(target, paymentData);
+      if (!val.ok) {
+        return { ok: false, reason: val.reason };
+      }
+
+      const now = new Date().toISOString();
+      const newPayment = {
+        id: paymentData?.id || uid('pmt-'),
+        amount: val.clean.amount,
+        date: val.clean.date,
+        notes: String(paymentData?.notes || '').trim(),
+        operatorId: activeOperatorId,
+        operatorName: activeOperator?.name || 'Operator Warung',
+        createdAt: now,
+      };
+
+      const nextPayments = [...(target.payments || []), newPayment];
+      const remaining = calculateDebtRemaining({ ...target, payments: nextPayments });
+      const isLunas = remaining === 0;
+
+      const updatedDebt = {
+        ...target,
+        payments: nextPayments,
+        updatedAt: now,
+      };
+
+      setDebts((prev) =>
+        prev.map((d) => {
+          if (d.id !== debtId) return d;
+          return updatedDebt;
+        })
+      );
+
+      enqueueSync('UPDATE', 'debts', debtId, updatedDebt);
+
+      addActivityLog({
+        title: isLunas ? `Pelunasan ${target.type === 'piutang' ? 'Piutang' : 'Hutang'}` : `Cicilan ${target.type === 'piutang' ? 'Piutang' : 'Hutang'}`,
+        desc: `${target.name}: pembayaran ${rupiah(val.clean.amount)} • ${isLunas ? 'LUNAS' : 'Sisa: ' + rupiah(remaining)}`,
+        type: 'debt_payment',
+        timestamp: now,
+      });
+
+      pushToast(
+        isLunas
+          ? `Pembayaran ${rupiah(val.clean.amount)} dicatat. Catatan “${target.name}” telah LUNAS!`
+          : `Pembayaran ${rupiah(val.clean.amount)} berhasil dicatat untuk ${target.name}. Sisa: ${rupiah(remaining)}`
+      );
+
+      return { ok: true, payment: newPayment, remaining, isLunas };
+    },
+    [debts, activeOperatorId, activeOperator, addActivityLog, pushToast, enqueueSync]
+  );
+
+  // Hapus riwayat pembayaran
+  const deleteDebtPayment = useCallback(
+    (debtId, paymentId) => {
+      const target = debts.find((d) => d.id === debtId);
+      if (!target) return { ok: false, reason: 'Catatan hutang/piutang tidak ditemukan.' };
+
+      const payment = (target.payments || []).find((p) => p.id === paymentId);
+      if (!payment) return { ok: false, reason: 'Riwayat pembayaran tidak ditemukan.' };
+
+      const now = new Date().toISOString();
+      const nextPayments = (target.payments || []).filter((p) => p.id !== paymentId);
+
+      const updatedDebt = {
+        ...target,
+        payments: nextPayments,
+        updatedAt: now,
+      };
+
+      setDebts((prev) =>
+        prev.map((d) => {
+          if (d.id !== debtId) return d;
+          return updatedDebt;
+        })
+      );
+
+      enqueueSync('UPDATE', 'debts', debtId, updatedDebt);
+
+      pushToast(`Riwayat pembayaran ${rupiah(payment.amount)} berhasil dihapus`);
+      return { ok: true };
+    },
+    [debts, pushToast, enqueueSync]
+  );
+
+  /* ---------- Modul Pencatatan Tabung Gas Belum Kembali (Tanpa Uang/Jaminan) ---------- */
+  const computeGasBorrowStatus = useCallback((gb) => {
+    if (!gb) return 'belum_kembali';
+    const totalBorrowed = Math.max(0, Number(gb.quantity) || 0);
+    const totalReturned = (gb.returns || []).reduce((acc, r) => acc + (Number(r.quantity) || 0), 0);
+    const remaining = Math.max(0, totalBorrowed - totalReturned);
+    if (remaining === 0 && totalBorrowed > 0) return 'selesai';
+    if (totalReturned > 0) return 'sebagian_kembali';
+    return 'belum_kembali';
   }, []);
+
+  const calculateGasBorrowRemaining = useCallback((gb) => {
+    if (!gb) return 0;
+    const totalBorrowed = Math.max(0, Number(gb.quantity) || 0);
+    const totalReturned = (gb.returns || []).reduce((acc, r) => acc + (Number(r.quantity) || 0), 0);
+    return Math.max(0, totalBorrowed - totalReturned);
+  }, []);
+
+  const calculateGasBorrowTotalReturned = useCallback((gb) => {
+    if (!gb) return 0;
+    return (gb.returns || []).reduce((acc, r) => acc + (Number(r.quantity) || 0), 0);
+  }, []);
+
+  const gasBorrowsSummary = useMemo(() => {
+    let totalUnreturnedTubes = 0;
+    let totalReturnedTubes = 0;
+    let completedCount = 0;
+    const activeCustomerSet = new Set();
+
+    (gasBorrows || []).forEach((gb) => {
+      const remaining = calculateGasBorrowRemaining(gb);
+      const returned = calculateGasBorrowTotalReturned(gb);
+      totalUnreturnedTubes += remaining;
+      totalReturnedTubes += returned;
+      if (remaining === 0 && (Number(gb.quantity) || 0) > 0) {
+        completedCount++;
+      } else {
+        if (gb.customerName) {
+          activeCustomerSet.add(gb.customerName.trim().toLowerCase());
+        }
+      }
+    });
+
+    return {
+      totalRecords: gasBorrows.length,
+      totalUnreturnedTubes,
+      totalReturnedTubes,
+      completedCount,
+      activeCustomersCount: activeCustomerSet.size,
+    };
+  }, [gasBorrows, calculateGasBorrowRemaining, calculateGasBorrowTotalReturned]);
+
+  const createGasBorrow = useCallback(
+    (data) => {
+      const customerName = String(data?.customerName || '').trim();
+      const customerPhone = String(data?.customerPhone || '').trim();
+      const quantity = parseInt(data?.quantity, 10);
+      const borrowDate = data?.borrowDate ? String(data.borrowDate).trim() : new Date().toISOString().split('T')[0];
+      const notes = String(data?.notes || '').trim();
+
+      if (!customerName) {
+        return { ok: false, reason: 'Nama peminjam/pelanggan wajib diisi.' };
+      }
+      if (isNaN(quantity) || quantity <= 0) {
+        return { ok: false, reason: 'Jumlah tabung gas yang dipinjam harus lebih dari 0.' };
+      }
+
+      const now = new Date().toISOString();
+      const newRecord = {
+        id: data?.id || uid('gas-'),
+        customerName,
+        customerPhone,
+        quantity,
+        borrowDate,
+        notes,
+        returns: [],
+        createdAt: data?.createdAt || now,
+        updatedAt: now,
+      };
+
+      setGasBorrows((prev) => [newRecord, ...prev]);
+      addActivityLog({
+        title: 'Peminjaman Tabung Gas Dicatat',
+        desc: `${customerName} meminjam ${quantity} tabung gas (Tanpa transaksi uang)`,
+        type: 'gas_borrow_created',
+        timestamp: now,
+      });
+
+      pushToast(`Peminjaman ${quantity} tabung gas untuk “${customerName}” berhasil dicatat`);
+      return { ok: true, gasBorrow: newRecord };
+    },
+    [addActivityLog, pushToast]
+  );
+
+  const returnGasBorrow = useCallback(
+    (id, returnData) => {
+      const target = gasBorrows.find((g) => g.id === id);
+      if (!target) return { ok: false, reason: 'Data pinjaman tabung gas tidak ditemukan.' };
+
+      const remaining = calculateGasBorrowRemaining(target);
+      if (remaining <= 0) {
+        return { ok: false, reason: 'Seluruh tabung gas pada catatan ini sudah dikembalikan.' };
+      }
+
+      const returnQty = parseInt(returnData?.quantity, 10);
+      if (isNaN(returnQty) || returnQty <= 0) {
+        return { ok: false, reason: 'Jumlah tabung gas yang dikembalikan harus lebih dari 0.' };
+      }
+      if (returnQty > remaining) {
+        return {
+          ok: false,
+          reason: `Jumlah pengembalian (${returnQty} tabung) melebihi sisa tabung yang belum kembali (${remaining} tabung).`,
+        };
+      }
+
+      const returnDate = returnData?.returnDate
+        ? String(returnData.returnDate).trim()
+        : new Date().toISOString().split('T')[0];
+      const notes = String(returnData?.notes || '').trim();
+      const now = new Date().toISOString();
+
+      const newReturnEntry = {
+        id: returnData?.id || uid('grt-'),
+        quantity: returnQty,
+        returnDate,
+        notes,
+        operatorId: activeOperatorId,
+        operatorName: activeOperator?.name || 'Operator Warung',
+        createdAt: now,
+      };
+
+      const nextReturns = [...(target.returns || []), newReturnEntry];
+      const newRemaining = Math.max(0, remaining - returnQty);
+      const isComplete = newRemaining === 0;
+
+      const updatedRecord = {
+        ...target,
+        returns: nextReturns,
+        updatedAt: now,
+      };
+
+      setGasBorrows((prev) =>
+        prev.map((g) => (g.id === id ? updatedRecord : g))
+      );
+
+      addActivityLog({
+        title: isComplete ? 'Pengembalian Tabung Gas Selesai' : 'Pengembalian Sebagian Tabung Gas',
+        desc: `${target.customerName}: mengembalikan ${returnQty} tabung • ${isComplete ? 'LENGKAP SEMUA KEMBALI' : 'Sisa belum kembali: ' + newRemaining + ' tabung'}`,
+        type: 'gas_borrow_returned',
+        timestamp: now,
+      });
+
+      pushToast(
+        isComplete
+          ? `Pengembalian ${returnQty} tabung dicatat. Semua tabung “${target.customerName}” telah lengkap kembali!`
+          : `Pengembalian ${returnQty} tabung berhasil dicatat. Sisa belum kembali: ${newRemaining} tabung`
+      );
+
+      return { ok: true, returnEntry: newReturnEntry, remaining: newRemaining, isComplete };
+    },
+    [gasBorrows, calculateGasBorrowRemaining, activeOperatorId, activeOperator, addActivityLog, pushToast]
+  );
+
+  const updateGasBorrow = useCallback(
+    (id, updates) => {
+      const target = gasBorrows.find((g) => g.id === id);
+      if (!target) return { ok: false, reason: 'Data pinjaman tabung gas tidak ditemukan.' };
+
+      const customerName = updates.customerName !== undefined ? String(updates.customerName).trim() : target.customerName;
+      const customerPhone = updates.customerPhone !== undefined ? String(updates.customerPhone).trim() : target.customerPhone;
+      const notes = updates.notes !== undefined ? String(updates.notes).trim() : target.notes;
+      const borrowDate = updates.borrowDate !== undefined ? String(updates.borrowDate).trim() : target.borrowDate;
+      const quantity = updates.quantity !== undefined ? parseInt(updates.quantity, 10) : target.quantity;
+
+      if (!customerName) {
+        return { ok: false, reason: 'Nama peminjam/pelanggan tidak boleh kosong.' };
+      }
+      if (isNaN(quantity) || quantity <= 0) {
+        return { ok: false, reason: 'Jumlah tabung gas harus lebih dari 0.' };
+      }
+
+      const totalReturned = calculateGasBorrowTotalReturned(target);
+      if (quantity < totalReturned) {
+        return {
+          ok: false,
+          reason: `Jumlah pinjaman baru (${quantity} tabung) tidak boleh kurang dari jumlah tabung yang sudah dikembalikan (${totalReturned} tabung).`,
+        };
+      }
+
+      const now = new Date().toISOString();
+      const updatedRecord = {
+        ...target,
+        customerName,
+        customerPhone,
+        quantity,
+        borrowDate,
+        notes,
+        updatedAt: now,
+      };
+
+      setGasBorrows((prev) => prev.map((g) => (g.id === id ? updatedRecord : g)));
+      pushToast(`Catatan tabung gas “${customerName}” berhasil diperbarui`);
+      return { ok: true, gasBorrow: updatedRecord };
+    },
+    [gasBorrows, calculateGasBorrowTotalReturned, pushToast]
+  );
+
+  const deleteGasBorrow = useCallback(
+    (id) => {
+      const target = gasBorrows.find((g) => g.id === id);
+      if (!target) return { ok: false, reason: 'Data pinjaman tabung gas tidak ditemukan.' };
+
+      setGasBorrows((prev) => prev.filter((g) => g.id !== id));
+      addActivityLog({
+        title: 'Catatan Pinjaman Tabung Gas Dihapus',
+        desc: `Catatan peminjaman tabung gas ${target.customerName} (${target.quantity} tabung) telah dihapus.`,
+        type: 'gas_borrow_deleted',
+        timestamp: new Date().toISOString(),
+      });
+
+      pushToast(`Catatan tabung gas “${target.customerName}” telah dihapus`);
+      return { ok: true };
+    },
+    [gasBorrows, addActivityLog, pushToast]
+  );
+
+  const updateSettings = useCallback(
+    (patch) => {
+      const now = new Date().toISOString();
+      let nextSettings = null;
+      setSettings((prev) => {
+        nextSettings = { ...prev, ...patch, updatedAt: now };
+        return nextSettings;
+      });
+      if (nextSettings) {
+        enqueueSync('UPDATE', 'meta_settings', 'settings', nextSettings);
+      }
+    },
+    [enqueueSync]
+  );
 
   const resetData = useCallback(() => {
     try {
@@ -2584,6 +3578,8 @@ export function AppProvider({ children }) {
     setPriceHistory([]);
     setVisits((seed.visits || []).map(migrateVisit).filter(Boolean));
     setDigitalTransactions((seed.digitalTransactions || []).map(migrateDigitalTransaction).filter(Boolean));
+    setDebts((seed.debts || []).map(migrateDebt).filter(Boolean));
+    setGasBorrows(seed.gasBorrows || []);
     setSettings(seed.settings);
     setActivityLogs([]);
     setReadNotifIds([]);
@@ -2610,6 +3606,8 @@ export function AppProvider({ children }) {
     setPriceHistory([]);
     setVisits([]);
     setDigitalTransactions([]);
+    setDebts([]);
+    setGasBorrows([]);
     setActivityLogs([]);
     setReadNotifIds([]);
     setOperators(DEFAULT_OPERATORS);
@@ -2643,6 +3641,8 @@ export function AppProvider({ children }) {
         storeCarts,
         visits,
         digitalTransactions,
+        debts,
+        gasBorrows,
       };
 
       const totalEntities =
@@ -2654,7 +3654,11 @@ export function AppProvider({ children }) {
         (Array.isArray(shortages) ? shortages.length : 0) +
         (Array.isArray(storePrices) ? storePrices.length : 0) +
         (Array.isArray(priceHistory) ? priceHistory.length : 0) +
-        (Array.isArray(operators) ? operators.length : 0);
+        (Array.isArray(operators) ? operators.length : 0) +
+        (Array.isArray(visits) ? visits.length : 0) +
+        (Array.isArray(digitalTransactions) ? digitalTransactions.length : 0) +
+        (Array.isArray(debts) ? debts.length : 0) +
+        (Array.isArray(gasBorrows) ? gasBorrows.length : 0);
 
       const checksum = computeDataChecksum({
         storeCount: stores.length,
@@ -2698,6 +3702,8 @@ export function AppProvider({ children }) {
       activeOperator,
       visits,
       digitalTransactions,
+      debts,
+      gasBorrows,
     ]
   );
 
@@ -2896,6 +3902,10 @@ export function AppProvider({ children }) {
       priceHistory: Array.isArray(d.priceHistory) ? d.priceHistory.length : 0,
       operators: Array.isArray(d.operators) ? d.operators.length : 0,
       storeCarts: d.storeCarts && typeof d.storeCarts === 'object' ? Object.keys(d.storeCarts).length : 0,
+      visits: Array.isArray(d.visits) ? d.visits.length : 0,
+      digitalTransactions: Array.isArray(d.digitalTransactions) ? d.digitalTransactions.length : 0,
+      debts: Array.isArray(d.debts) ? d.debts.length : 0,
+      gasBorrows: Array.isArray(d.gasBorrows) ? d.gasBorrows.length : 0,
     };
 
     return {
@@ -2919,27 +3929,34 @@ export function AppProvider({ children }) {
       }
 
       const d = validation.validatedData;
-      const nextProducts = d.products.map(migrateProduct).map(stripBuyOneGetOne).filter(Boolean);
-      const nextStores = d.stores.map(migrateStore).filter(Boolean);
-      const nextOrders = Array.isArray(d.orders) ? d.orders.map(migrateOrder).filter(Boolean) : [];
+      const nowIso = new Date().toISOString();
+      const nextProducts = d.products.map(migrateProduct).map(stripBuyOneGetOne).map((p) => ({ ...p, updatedAt: nowIso })).filter(Boolean);
+      const nextStores = d.stores.map(migrateStore).map((s) => ({ ...s, updatedAt: nowIso })).filter(Boolean);
+      const nextOrders = Array.isArray(d.orders) ? d.orders.map(migrateOrder).map((o) => ({ ...o, updatedAt: nowIso })).filter(Boolean) : [];
       const nextStorePrices = Array.isArray(d.storePrices)
         ? d.storePrices.map(migrateStorePrice).filter(Boolean)
         : [];
-      const nextStocks = migrateStocks(Array.isArray(d.stocks) ? d.stocks : [], nextProducts);
+      const nextStocks = migrateStocks(Array.isArray(d.stocks) ? d.stocks : [], nextProducts).map((st) => ({ ...st, updatedAt: nowIso }));
       const nextMovements = Array.isArray(d.movements) ? d.movements : [];
-      const nextShortages = Array.isArray(d.shortages) ? d.shortages.map(migrateShortage).filter(Boolean) : [];
+      const nextShortages = Array.isArray(d.shortages) ? d.shortages.map(migrateShortage).map((sh) => ({ ...sh, updatedAt: nowIso })).filter(Boolean) : [];
       const nextPriceHistory = Array.isArray(d.priceHistory)
         ? d.priceHistory.map(migratePriceHistory).filter(Boolean)
         : [];
-      const nextSettings = d.settings && typeof d.settings === 'object' ? d.settings : settings;
+      const nextSettings = d.settings && typeof d.settings === 'object' ? { ...d.settings, updatedAt: nowIso } : settings;
       const nextActivityLogs = Array.isArray(d.activityLogs) ? d.activityLogs : [];
       const nextOperators = Array.isArray(d.operators) && d.operators.length > 0 ? d.operators : operators;
       const nextActiveOpId = d.activeOperatorId || activeOperatorId;
       const nextStoreCarts = d.storeCarts && typeof d.storeCarts === 'object' ? d.storeCarts : null;
-      const nextVisits = Array.isArray(d.visits) ? d.visits.map(migrateVisit).filter(Boolean) : visits;
+      const nextVisits = Array.isArray(d.visits) ? d.visits.map(migrateVisit).map((v) => ({ ...v, updatedAt: nowIso })).filter(Boolean) : visits;
       const nextDigital = Array.isArray(d.digitalTransactions)
-        ? d.digitalTransactions.map(migrateDigitalTransaction).filter(Boolean)
+        ? d.digitalTransactions.map(migrateDigitalTransaction).map((t) => ({ ...t, updatedAt: nowIso })).filter(Boolean)
         : digitalTransactions;
+      const nextDebts = Array.isArray(d.debts)
+        ? d.debts.map(migrateDebt).map((b) => ({ ...b, updatedAt: nowIso })).filter(Boolean)
+        : debts;
+      const nextGasBorrows = Array.isArray(d.gasBorrows)
+        ? d.gasBorrows.filter(Boolean)
+        : gasBorrows;
 
       // Ambil snapshot data localStorage saat ini untuk atomic rollback dan persistent restore rollback
       const snapshot = {};
@@ -2964,6 +3981,10 @@ export function AppProvider({ children }) {
           products: products.length,
           orders: orders.length,
           stocks: stocks.length,
+          visits: visits.length,
+          digitalTransactions: digitalTransactions.length,
+          debts: debts.length,
+          gasBorrows: gasBorrows.length,
         },
         snapshot,
       };
@@ -2988,6 +4009,12 @@ export function AppProvider({ children }) {
         }
         if (Array.isArray(d.digitalTransactions)) {
           save('digital_transactions', nextDigital);
+        }
+        if (Array.isArray(d.debts)) {
+          save('debts', nextDebts);
+        }
+        if (Array.isArray(d.gasBorrows)) {
+          save('gas_borrows', nextGasBorrows);
         }
         if (nextStoreCarts !== null) {
           localStorage.setItem('wm_v1_store_carts', JSON.stringify(nextStoreCarts));
@@ -3033,6 +4060,12 @@ export function AppProvider({ children }) {
       }
       if (Array.isArray(d.digitalTransactions)) {
         setDigitalTransactions(nextDigital);
+      }
+      if (Array.isArray(d.debts)) {
+        setDebts(nextDebts);
+      }
+      if (Array.isArray(d.gasBorrows)) {
+        setGasBorrows(nextGasBorrows);
       }
 
       addActivityLog({
@@ -3101,6 +4134,10 @@ export function AppProvider({ children }) {
       const reloadedActivityLogs = load('activityLogs', []);
       const reloadedOperators = load('operators', DEFAULT_OPERATORS);
       const reloadedActiveOpId = load('active_operator_id', 'op-ainie');
+      const reloadedVisits = load('visits', []).map(migrateVisit).filter(Boolean);
+      const reloadedDigital = load('digital_transactions', []).map(migrateDigitalTransaction).filter(Boolean);
+      const reloadedDebts = load('debts', []).map(migrateDebt).filter(Boolean);
+      const reloadedGasBorrows = load('gas_borrows', seed.gasBorrows || []);
 
       setStores(reloadedStores);
       setProducts(reloadedProducts);
@@ -3114,6 +4151,10 @@ export function AppProvider({ children }) {
       setActivityLogs(reloadedActivityLogs);
       setOperators(reloadedOperators);
       setActiveOperatorId(reloadedActiveOpId);
+      setVisits(reloadedVisits);
+      setDigitalTransactions(reloadedDigital);
+      setDebts(reloadedDebts);
+      setGasBorrows(reloadedGasBorrows);
 
       addActivityLog({
         title: 'Pembatalan Pemulihan Berhasil',
@@ -3543,6 +4584,9 @@ export function AppProvider({ children }) {
     createStore,
     updateStore,
     deleteStore,
+    addStoreSales,
+    updateStoreSales,
+    deleteStoreSales,
     saveProduct,
     addProductWithStock,
     checkProductReferences,
@@ -3601,6 +4645,30 @@ export function AppProvider({ children }) {
     updateDigitalTransaction,
     deleteDigitalTransaction,
     changeDigitalTransactionStatus,
+    debts,
+    debtsSummary,
+    activeDebts,
+    overdueDebts,
+    createDebt,
+    updateDebt,
+    deleteDebt,
+    addDebtPayment,
+    deleteDebtPayment,
+    computeDebtStatus,
+    calculateDebtRemaining,
+    calculateDebtTotalPaid,
+    gasBorrows,
+    gasBorrowsSummary,
+    createGasBorrow,
+    returnGasBorrow,
+    updateGasBorrow,
+    deleteGasBorrow,
+    computeGasBorrowStatus,
+    calculateGasBorrowRemaining,
+    calculateGasBorrowTotalReturned,
+    syncStatus,
+    triggerSyncNow: manualSync,
+    enqueueSync,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

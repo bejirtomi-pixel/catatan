@@ -15,7 +15,10 @@ import { initializeApp, deleteApp } from 'firebase/app';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { getAuth, signInWithPopup } from 'firebase/auth';
 
-import {
+// Pastikan flag emulator aktif untuk pengujian perilaku fail-closed emulator
+process.env.VITE_USE_FIREBASE_EMULATOR = 'true';
+
+const {
   app,
   db,
   auth,
@@ -26,7 +29,7 @@ import {
   assertFirebaseReady,
   shouldConnectEmulator,
   _resetEmulatorStateForTesting,
-} from '../src/services/firebase.js';
+} = await import('../src/services/firebase.js');
 
 const results = [];
 

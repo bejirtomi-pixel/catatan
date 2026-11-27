@@ -10,6 +10,7 @@ import {
   ChevronRight,
   ClipboardList,
   Eye,
+  HandCoins,
   History,
   Inbox,
   Package,
@@ -208,6 +209,9 @@ export default function Dashboard() {
     todayDigitalTransactions = [],
     todayDigitalSummary = { totalProfit: 0 },
     pendingDigitalTransactions = [],
+    debts = [],
+    debtsSummary = { remainingPiutang: 0, remainingHutang: 0, overdueCount: 0, activeRecordsCount: 0 },
+    overdueDebts = [],
   } = useApp();
 
   const navigate = useNavigate();
@@ -407,6 +411,31 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Pengingat Hutang-Piutang Jatuh Tempo */}
+      {overdueDebts.length > 0 && (
+        <div data-testid="dashboard-debt-overdue" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50/85 p-3.5 sm:px-4 text-xs shadow-soft transition">
+          <div className="flex items-center gap-2.5 text-rose-950">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-rose-200/80 text-rose-800">
+              <HandCoins className="h-4 w-4" />
+            </span>
+            <div>
+              <p className="font-bold">
+                Hutang-Piutang Jatuh Tempo ({overdueDebts.length} Catatan)
+              </p>
+              <p className="text-[11px] text-rose-900/80">
+                Terdapat {overdueDebts.length} catatan hutang/piutang yang melewati batas waktu tempo dan perlu ditindaklanjuti.
+              </p>
+            </div>
+          </div>
+          <Link
+            to="/hutang-piutang"
+            className="inline-flex items-center gap-1 rounded-xl bg-rose-200/90 px-3 py-1.5 font-bold text-rose-950 hover:bg-rose-300 transition text-xs shadow-xs"
+          >
+            Buka Hutang-Piutang <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      )}
+
       {/* ============================================================ */}
       {/* 1. BAGIAN ATAS: TEPAT 2 KARTU UTAMA */}
       {/* ============================================================ */}
@@ -456,11 +485,11 @@ export default function Dashboard() {
               </div>
 
               <div className="mt-4 space-y-1.5 text-xs text-ink-soft">
-                <p className="line-clamp-2 leading-relaxed text-ink/80">
+                <p className="leading-relaxed text-ink/80 break-words">
                   {settings?.description || 'Pencatatan inventaris, stok barang, toko pemasok, dan pesanan operasional warung.'}
                 </p>
                 {settings?.address && (
-                  <p className="text-[11px] text-ink-soft line-clamp-1">
+                  <p className="text-[11px] text-ink-soft break-words">
                     <span className="font-semibold text-ink">Alamat:</span> {settings.address}
                   </p>
                 )}
@@ -1083,7 +1112,7 @@ export default function Dashboard() {
                   <div className="flex items-start gap-3">
                     <ProductImage product={p} size="md" showBadges={false} />
                     <div className="min-w-0 flex-1">
-                      <p className="font-bold text-ink transition group-hover:text-primary leading-snug line-clamp-1">
+                      <p className="font-bold text-ink transition group-hover:text-primary leading-snug break-words">
                         {p.name}
                       </p>
                       <p className="text-[11px] text-ink-soft">{p.category || 'Tanpa kategori'}</p>
@@ -1115,7 +1144,7 @@ export default function Dashboard() {
 
                   {/* Keterangan promo atau catatan */}
                   {(p.promoDescription || p.description || s?.note) && (
-                    <div className="mt-3 rounded-lg bg-surface p-2 text-[11px] text-ink-soft line-clamp-2">
+                    <div className="mt-3 rounded-lg bg-surface p-2 text-[11px] text-ink-soft break-words leading-relaxed">
                       {p.promoDescription || p.description || s?.note}
                     </div>
                   )}

@@ -127,6 +127,9 @@ export default function Pengaturan() {
     addOperator,
     updateOperator,
     toggleOperatorStatus,
+    visits = [],
+    digitalTransactions = [],
+    debts = [],
   } = useApp();
 
   // State Manajemen Operator
@@ -215,7 +218,7 @@ export default function Pengaturan() {
       } else if (res.running) {
         pushToast('Proses sinkronisasi sedang berlangsung di latar belakang.', 'info');
       } else if (res.processedCount > 0 && res.failedCount === 0) {
-        pushToast(`Berhasil menyinkronkan ${res.processedCount} data pemasok ke cloud.`, 'success');
+        pushToast(`Berhasil menyinkronkan ${res.processedCount} data warung ke cloud.`, 'success');
       } else if (res.processedCount > 0 && res.failedCount > 0) {
         pushToast(`Sinkronisasi parsial: ${res.processedCount} berhasil, ${res.failedCount} gagal. Periksa koneksi/database.`, 'warning');
       } else if (res.failedCount > 0) {
@@ -279,8 +282,11 @@ export default function Pengaturan() {
       orders: orders.length,
       movements: movements.length,
       shortages: shortages.length,
+      visits: visits.length,
+      digitalTransactions: digitalTransactions.length,
+      debts: debts.length,
     }),
-    [stores, products, stocks, orders, movements, shortages]
+    [stores, products, stocks, orders, movements, shortages, visits, digitalTransactions, debts]
   );
 
   /* =========================================================================
@@ -532,6 +538,9 @@ export default function Pengaturan() {
       priceHistory: validation.summary.priceHistory || 0,
       operators: validation.summary.operators || 0,
       storeCarts: validation.summary.storeCarts || 0,
+      visits: validation.summary.visits || 0,
+      digitalTransactions: validation.summary.digitalTransactions || 0,
+      debts: validation.summary.debts || 0,
       integrity: validation.integrity,
       warnings: validation.warnings || [],
     };
@@ -891,10 +900,10 @@ export default function Pengaturan() {
                           </button>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-1.5">
-                          <p className="truncate text-xs font-bold text-ink">{op.name}</p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="break-words text-xs font-bold text-ink">{op.name}</p>
                           {isCurrent && (
-                            <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[9px] font-bold text-primary">
+                            <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[9px] font-bold text-primary shrink-0">
                               Bertugas
                             </span>
                           )}
@@ -1337,8 +1346,8 @@ export default function Pengaturan() {
               </p>
               {ownerUid ? (
                 <div className="mt-2.5 rounded-xl bg-amber-50/70 p-2 border border-amber-200/60 text-[10px] leading-snug">
-                  <span className="font-bold text-amber-950 block truncate">Pemilik: {currentUser?.email}</span>
-                  <span className="font-mono text-ink-soft block truncate">UID: {ownerUid}</span>
+                  <span className="font-bold text-amber-950 block break-all">Pemilik: {currentUser?.email}</span>
+                  <span className="font-mono text-ink-soft block break-all">UID: {ownerUid}</span>
                 </div>
               ) : (
                 <p className="mt-2 text-[10px] font-semibold text-rose-600">
@@ -1444,7 +1453,7 @@ export default function Pengaturan() {
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line/60 pt-2.5 text-[11px]">
             <div className="flex flex-wrap items-center gap-2 text-ink-soft">
-              <span>Domain: <strong className="text-ink">Suppliers (Pilot)</strong></span>
+              <span>Domain: <strong className="text-ink">Seluruh Modul (10 Domain Operasional)</strong></span>
               <span>•</span>
               <span>
                 Terakhir: <strong className="text-ink">
@@ -1731,6 +1740,18 @@ export default function Pengaturan() {
                     <div className="rounded-xl border border-line bg-white p-2">
                       <span className="text-[10px] text-ink-soft">Keranjang Toko</span>
                       <p className="font-extrabold text-ink text-sm">{summary.storeCarts}</p>
+                    </div>
+                    <div className="rounded-xl border border-line bg-white p-2">
+                      <span className="text-[10px] text-ink-soft">Kunjungan</span>
+                      <p className="font-extrabold text-ink text-sm">{summary.visits || 0}</p>
+                    </div>
+                    <div className="rounded-xl border border-line bg-white p-2">
+                      <span className="text-[10px] text-ink-soft">Digital</span>
+                      <p className="font-extrabold text-ink text-sm">{summary.digitalTransactions || 0}</p>
+                    </div>
+                    <div className="rounded-xl border border-line bg-white p-2">
+                      <span className="text-[10px] text-ink-soft">Hutang-Piutang</span>
+                      <p className="font-extrabold text-ink text-sm">{summary.debts || 0}</p>
                     </div>
                   </div>
                 </div>

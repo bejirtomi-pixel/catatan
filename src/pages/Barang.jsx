@@ -267,6 +267,8 @@ export default function Barang() {
       units,
       minStock: data.minStock === '' || data.minStock == null ? null : Number(data.minStock),
       storeIds,
+      salesId: data.salesId || '',
+      salesIds: data.salesId ? [data.salesId] : (data.salesIds || []),
       previousPrice,
       priceChange,
       promo: !!data.promo,
@@ -479,12 +481,12 @@ export default function Barang() {
 
                       {/* 2. Nama Barang */}
                       <TD className="py-3.5">
-                        <div className="max-w-[220px]">
+                        <div className="min-w-[180px] max-w-sm break-words">
                           <button
                             type="button"
                             onClick={() => setDetail(p)}
                             title="Buka detail barang"
-                            className="text-left font-bold text-ink hover:text-primary leading-snug transition"
+                            className="text-left font-bold text-ink hover:text-primary leading-snug transition break-words"
                           >
                             {p.name}
                           </button>
@@ -498,6 +500,17 @@ export default function Barang() {
                               Nonaktif
                             </span>
                           ) : null}
+                          {p.salesId && (() => {
+                            const sl = stores.flatMap((s) => s.sales || []).find((x) => x.id === p.salesId);
+                            if (!sl) return null;
+                            return (
+                              <div className="mt-1">
+                                <span className="inline-flex items-center gap-0.5 rounded bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
+                                  👤 {sl.name}
+                                </span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </TD>
 
@@ -568,12 +581,12 @@ export default function Barang() {
                             )}
                           </div>
                           {p.promo && p.promoTitle && (
-                            <p className="font-semibold text-primary line-clamp-1">
+                            <p className="font-semibold text-primary break-words leading-snug">
                               {p.promoTitle}
                             </p>
                           )}
                           {p.description && !p.promo && (
-                            <p className="text-ink-soft line-clamp-2 leading-relaxed">
+                            <p className="text-ink-soft break-words leading-relaxed">
                               {p.description}
                             </p>
                           )}
@@ -856,7 +869,7 @@ function MobileProductCard({
 
       {/* Keterangan Promo / Deskripsi */}
       {(p.promoDescription || p.description) && (
-        <p className="text-xs text-ink-soft line-clamp-2 leading-relaxed">
+        <p className="text-xs text-ink-soft break-words leading-relaxed">
           {p.promoDescription || p.description}
         </p>
       )}
@@ -916,6 +929,7 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
   const [minStock, setMinStock] = useState('');
   const [active, setActive] = useState(true);
   const [storesSel, setStoreSel] = useState([]);
+  const [salesId, setSalesId] = useState('');
   const [units, setUnits] = useState([]);
   const [promo, setPromo] = useState(false);
   const [promoTitle, setPromoTitle] = useState('');
@@ -942,6 +956,7 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
           })
           .filter(Boolean)
       );
+      setSalesId(editing.salesId || '');
       setUnits(
         (editing.units || []).map((u) => ({
           id: u.id,
@@ -964,6 +979,7 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
       setMinStock('');
       setActive(true);
       setStoreSel([]);
+      setSalesId('');
       setUnits([{ id: uid('u-'), name: 'pcs', factor: '1', price: '' }]);
       setPromo(false);
       setPromoTitle('');
@@ -981,6 +997,17 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
   const removeUnit = (key) => setUnits((prev) => prev.filter((u) => u.id !== key));
   const addUnit = () =>
     setUnits((prev) => [...prev, { id: uid('u-'), name: '', factor: '', price: '' }]);
+
+  const availableSales = useMemo(() => {
+    return storesSel.flatMap((sel) => {
+      const s = stores.find((x) => x.id === sel.id);
+      return (s?.sales || []).map((sl) => ({
+        ...sl,
+        storeId: s.id,
+        storeName: s.name,
+      }));
+    });
+  }, [storesSel, stores]);
 
   const submit = () => {
     const errs = {};
@@ -1021,6 +1048,7 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
       minStock: minStock === '' ? '' : Number(minStock),
       active,
       stores: storesSel,
+      salesId: salesId.trim(),
       units,
       promo,
       promoTitle,
@@ -1137,16 +1165,39 @@ function ProductFormModal({ open, onClose, editing, onSave }) {
           </div>
         </section>
 
-        {/* Toko Pemasok (Dipertahankan untuk Relasi Pesanan) */}
+        {/* Toko Pemasok & Sales Terkait (Relasi Master Data) */}
         <section className="rounded-2xl border border-line bg-white p-4 sm:p-5">
-          <p className={sectionTitle}>Toko Pemasok Terkait</p>
+          <p className={sectionTitle}>Toko Pemasok &amp; Sales Terkait</p>
           <p className="mt-1 text-xs text-ink-soft">
-            Pilih toko pemasok untuk mempermudah saat membuat pesanan pembelian barang.
+            Pilih toko pemasok dan sales / divisi yang menangani pasokan produk ini.
           </p>
-          <div className="mt-4">
+          <div className="mt-4 space-y-3">
             <Field label="Pilih Toko Pemasok (opsional)" error={errors.stores}>
               <StorePicker stores={stores} value={storesSel} onChange={setStoreSel} />
             </Field>
+
+            {storesSel.length > 0 && (
+              <Field label="Sales / Divisi Supplier yang Menangani (opsional)">
+                {availableSales.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-line bg-surface p-2.5 text-xs text-ink-soft">
+                    Toko pemasok yang dipilih belum memiliki daftar sales/divisi. (Dapat ditambahkan pada halaman Toko).
+                  </p>
+                ) : (
+                  <select
+                    value={salesId}
+                    onChange={(e) => setSalesId(e.target.value)}
+                    className="input w-full text-xs"
+                  >
+                    <option value="">Tanpa Sales Khusus (Semua / Umum)</option>
+                    {availableSales.map((sl) => (
+                      <option key={sl.id} value={sl.id}>
+                        {sl.name} — ({sl.storeName}) {sl.products ? `• ${sl.products}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Field>
+            )}
           </div>
         </section>
 

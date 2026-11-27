@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -65,6 +65,7 @@ const VISIT_TYPES = [
 
 export default function Kunjungan() {
   const {
+    stores,
     visits,
     todayVisits,
     overdueVisits,
@@ -89,6 +90,7 @@ export default function Kunjungan() {
   const [periodFilter, setPeriodFilter] = useState('semua'); // 'semua' | 'hari_ini' | 'minggu_ini' | 'bulan_ini'
   const [statusFilter, setStatusFilter] = useState('semua'); // 'semua' | 'scheduled' | 'overdue' | 'completed' | 'cancelled'
   const [typeFilter, setTypeFilter] = useState('semua'); // 'semua' | 'supplier' | 'pengiriman' | 'keperluan_usaha' | 'lainnya'
+  const [storeFilter, setStoreFilter] = useState('semua');
   const [viewMode, setViewMode] = useState('list'); // 'list' | 'calendar'
 
   // Modals state
@@ -113,13 +115,15 @@ export default function Kunjungan() {
     setPeriodFilter('semua');
     setStatusFilter('semua');
     setTypeFilter('semua');
+    setStoreFilter('semua');
   };
 
   const hasFilter =
     search.trim() !== '' ||
     periodFilter !== 'semua' ||
     statusFilter !== 'semua' ||
-    typeFilter !== 'semua';
+    typeFilter !== 'semua' ||
+    storeFilter !== 'semua';
 
   // Filtered visits
   const filteredVisits = useMemo(() => {
@@ -154,6 +158,11 @@ export default function Kunjungan() {
       // Filter jenis
       if (typeFilter !== 'semua' && v.type !== typeFilter) return false;
 
+      // Filter toko utama (supplier)
+      if (storeFilter !== 'semua') {
+        if (v.storeId !== storeFilter) return false;
+      }
+
       // Filter periode
       if (periodFilter === 'hari_ini') {
         if (v.date !== todayStr) return false;
@@ -170,12 +179,16 @@ export default function Kunjungan() {
       const location = (v.location || '').toLowerCase();
       const notes = (v.notes || '').toLowerCase();
       const outcome = (v.completion?.outcome || '').toLowerCase();
+      const sName = (v.storeName || '').toLowerCase();
+      const slName = (v.salesName || '').toLowerCase();
       return (
         name.includes(q) ||
         agenda.includes(q) ||
         location.includes(q) ||
         notes.includes(q) ||
-        outcome.includes(q)
+        outcome.includes(q) ||
+        sName.includes(q) ||
+        slName.includes(q)
       );
     }).sort((a, b) => {
       // Urutkan: Terjadwal aktif / terlambat terlebih dahulu berdasarkan tanggal, kemudian riwayat
@@ -183,7 +196,7 @@ export default function Kunjungan() {
       if (a.status !== 'scheduled' && b.status === 'scheduled') return 1;
       return (a.date || '').localeCompare(b.date || '');
     });
-  }, [visits, search, periodFilter, statusFilter, typeFilter, todayStr, getVisitComputedStatus]);
+  }, [visits, search, periodFilter, statusFilter, typeFilter, storeFilter, todayStr, getVisitComputedStatus]);
 
   // Calendar computation
   const calDays = useMemo(() => {
@@ -485,6 +498,22 @@ export default function Kunjungan() {
                 </option>
               ))}
             </select>
+
+            {/* Filter Toko Utama (Supplier) */}
+            {stores.length > 0 && (
+              <select
+                value={storeFilter}
+                onChange={(e) => setStoreFilter(e.target.value)}
+                className="input text-xs py-2 px-3 w-auto min-w-[9rem]"
+              >
+                <option value="semua">Semua Supplier</option>
+                {stores.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    🏪 {s.name}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -970,6 +999,21 @@ function VisitCard({
             {visit.name}
           </h4>
 
+          {(visit.storeName || visit.salesName) && (
+            <div className="flex flex-wrap items-center gap-1 mt-1">
+              {visit.storeName && (
+                <span className="inline-flex items-center gap-0.5 rounded bg-amber-50 border border-amber-200/80 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                  🏪 {visit.storeName}
+                </span>
+              )}
+              {visit.salesName && (
+                <span className="inline-flex items-center gap-0.5 rounded bg-indigo-50 border border-indigo-200/80 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-800">
+                  👤 {visit.salesName}
+                </span>
+              )}
+            </div>
+          )}
+
           <div className="mt-1 flex items-center gap-2 text-xs text-ink-soft">
             <span className="flex items-center gap-1 font-semibold text-ink">
               <Calendar className="h-3.5 w-3.5 text-primary" />
@@ -986,14 +1030,14 @@ function VisitCard({
 
         {/* Agenda / Tujuan Kunjungan */}
         {visit.agenda && (
-          <p className="mt-2 text-xs text-ink/80 leading-relaxed line-clamp-2 break-words">
+          <p className="mt-2 text-xs text-ink/80 leading-relaxed break-words">
             <span className="font-semibold text-ink">Agenda:</span> {visit.agenda}
           </p>
         )}
 
         {/* Lokasi jika ada */}
         {visit.location && (
-          <p className="mt-1 flex items-start gap-1 text-[11px] text-ink-soft line-clamp-1 break-words">
+          <p className="mt-1 flex items-start gap-1 text-[11px] text-ink-soft break-words">
             <MapPin className="h-3 w-3 shrink-0 text-primary mt-0.5" />
             <span>{visit.location}</span>
           </p>
@@ -1003,7 +1047,7 @@ function VisitCard({
         {isCompleted && visit.completion?.outcome && (
           <div className="mt-2.5 rounded-xl border border-emerald-200 bg-emerald-50/60 p-2.5 text-xs text-emerald-950">
             <p className="font-bold text-[11px] text-emerald-800">Hasil Kunjungan:</p>
-            <p className="line-clamp-2 leading-relaxed mt-0.5 text-emerald-900">
+            <p className="leading-relaxed mt-0.5 text-emerald-900 break-words">
               {visit.completion.outcome}
             </p>
             {visit.completion.nextVisitDate && (
@@ -1088,6 +1132,9 @@ function VisitCard({
 // MODAL FORM: TAMBAH / EDIT KUNJUNGAN
 // =========================================================================
 function VisitFormModal({ open, onClose, initialData, onSave }) {
+  const { stores } = useApp();
+  const [storeId, setStoreId] = useState('');
+  const [salesId, setSalesId] = useState('');
   const [name, setName] = useState('');
   const [type, setType] = useState('supplier');
   const [date, setDate] = useState(() => getLocalDateString());
@@ -1101,8 +1148,11 @@ function VisitFormModal({ open, onClose, initialData, onSave }) {
   const [submitting, setSubmitting] = useState(false);
 
   // Sync state saat modal dibuka
-  useState(() => {
-    if (initialData) {
+  useEffect(() => {
+    if (!open) return;
+    if (initialData && initialData.id) {
+      setStoreId(initialData.storeId || '');
+      setSalesId(initialData.salesId || '');
       setName(initialData.name || '');
       setType(initialData.type || 'supplier');
       setDate(initialData.date || getLocalDateString());
@@ -1113,11 +1163,25 @@ function VisitFormModal({ open, onClose, initialData, onSave }) {
       setRecurrenceType(initialData.recurrence?.type || 'none');
       setEndDate(initialData.recurrence?.endDate || '');
     } else {
-      setName('');
+      const defaultDate = initialData?.date || getLocalDateString();
+      const firstStore = stores[0];
+      const firstSales = firstStore?.sales?.[0];
+      const initStoreId = firstStore?.id || '';
+      const initSalesId = firstSales?.id || '';
+
+      setStoreId(initStoreId);
+      setSalesId(initSalesId);
+      setName(
+        firstSales && firstStore
+          ? `${firstSales.name} (${firstStore.name})`
+          : firstStore
+          ? firstStore.name
+          : ''
+      );
       setType('supplier');
-      setDate(getLocalDateString());
+      setDate(defaultDate);
       setTime('');
-      setLocation('');
+      setLocation(firstStore?.address || '');
       setAgenda('');
       setNotes('');
       setRecurrenceType('none');
@@ -1125,7 +1189,40 @@ function VisitFormModal({ open, onClose, initialData, onSave }) {
     }
     setErrors({});
     setSubmitting(false);
-  }, [open, initialData]);
+  }, [open, initialData, stores]);
+
+  const handleStoreChange = (e) => {
+    const sid = e.target.value;
+    setStoreId(sid);
+    const targetStore = stores.find((s) => s.id === sid);
+    if (targetStore) {
+      const firstSales = targetStore.sales?.[0];
+      if (firstSales) {
+        setSalesId(firstSales.id);
+        setName(`${firstSales.name} (${targetStore.name})`);
+      } else {
+        setSalesId('');
+        setName(targetStore.name);
+      }
+      if (targetStore.address && !location) {
+        setLocation(targetStore.address);
+      }
+    } else {
+      setSalesId('');
+    }
+  };
+
+  const handleSalesChange = (e) => {
+    const slId = e.target.value;
+    setSalesId(slId);
+    const targetStore = stores.find((s) => s.id === storeId);
+    const targetSales = targetStore?.sales?.find((sl) => sl.id === slId);
+    if (targetSales && targetStore) {
+      setName(`${targetSales.name} (${targetStore.name})`);
+    } else if (targetStore) {
+      setName(targetStore.name);
+    }
+  };
 
   if (!open) return null;
 
@@ -1133,8 +1230,16 @@ function VisitFormModal({ open, onClose, initialData, onSave }) {
     e?.preventDefault();
     if (submitting) return;
 
+    const targetStore = stores.find((s) => s.id === storeId);
+    const targetSales = targetStore?.sales?.find((sl) => sl.id === salesId);
+    const finalName =
+      name.trim() ||
+      (targetSales && targetStore
+        ? `${targetSales.name} (${targetStore.name})`
+        : targetStore?.name || '');
+
     const errs = {};
-    if (!name.trim()) errs.name = 'Nama pihak / kunjungan wajib diisi.';
+    if (!finalName) errs.name = 'Nama pihak / kunjungan wajib diisi.';
     if (!date) errs.date = 'Tanggal kunjungan wajib diisi.';
 
     setErrors(errs);
@@ -1142,7 +1247,11 @@ function VisitFormModal({ open, onClose, initialData, onSave }) {
 
     setSubmitting(true);
     onSave({
-      name: name.trim(),
+      storeId: targetStore?.id || '',
+      salesId: targetSales?.id || '',
+      storeName: targetStore?.name || '',
+      salesName: targetSales?.name || '',
+      name: finalName,
       type,
       date,
       time: time.trim(),
@@ -1164,7 +1273,7 @@ function VisitFormModal({ open, onClose, initialData, onSave }) {
       open={open}
       onClose={onClose}
       title={initialData?.id ? 'Edit Jadwal Kunjungan' : 'Tambah Jadwal Kunjungan'}
-      subtitle="Atur rencana kunjungan, pihak yang dikunjungi, agenda, dan pola pengulangan berkala."
+      subtitle="Atur rencana kunjungan, pihak supplier / sales yang dikunjungi, agenda, dan pola pengulangan berkala."
       size="md"
       footer={
         <div className="flex w-full items-center justify-end gap-2">
@@ -1178,12 +1287,74 @@ function VisitFormModal({ open, onClose, initialData, onSave }) {
       }
     >
       <form onSubmit={handleSubmit} className="space-y-3.5">
-        <Field label="Nama Pihak / Kunjungan" required error={errors.name}>
+        {/* Pilihan Toko Utama & Sales / Divisi */}
+        <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-3.5 space-y-3">
+          <div className="flex items-center gap-1.5 text-indigo-900">
+            <Store className="h-4 w-4 text-indigo-700" />
+            <span className="text-xs font-bold uppercase tracking-wider text-indigo-800">
+              Master Data Supplier &amp; Sales
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Pilih Toko Utama (Supplier)">
+              <select
+                value={storeId}
+                onChange={handleStoreChange}
+                className="input w-full text-xs"
+              >
+                <option value="">-- Pilih Toko Utama --</option>
+                {stores.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.sales?.length || 0} Sales)
+                  </option>
+                ))}
+                <option value="__custom__">Manual / Non-Supplier</option>
+              </select>
+            </Field>
+
+            <Field label="Pilih Sales / Divisi">
+              {(() => {
+                const selectedStore = stores.find((s) => s.id === storeId);
+                const sales = selectedStore?.sales || [];
+                if (!selectedStore) {
+                  return (
+                    <select disabled className="input w-full text-xs opacity-60">
+                      <option>Pilih toko terlebih dahulu</option>
+                    </select>
+                  );
+                }
+                if (sales.length === 0) {
+                  return (
+                    <p className="rounded-lg border border-line bg-white px-2.5 py-1.5 text-[11px] text-ink-soft">
+                      Belum ada sales (menggunakan nama toko)
+                    </p>
+                  );
+                }
+                return (
+                  <select
+                    value={salesId}
+                    onChange={handleSalesChange}
+                    className="input w-full text-xs"
+                  >
+                    <option value="">-- Pilih Sales / Divisi --</option>
+                    {sales.map((sl) => (
+                      <option key={sl.id} value={sl.id}>
+                        {sl.name} {sl.products ? `(${sl.products})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                );
+              })()}
+            </Field>
+          </div>
+        </div>
+
+        <Field label="Nama Pihak / Judul Kunjungan" required error={errors.name}>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="contoh: Sales Unilever, Toko Sumber Makmur, dsb."
-            autoFocus
+            placeholder="contoh: Sales Wings 1 (Toko Jaya), Sales Unilever, dsb."
           />
         </Field>
 
@@ -1651,6 +1822,29 @@ function VisitDetailModal({
             )}
           </div>
         </div>
+
+        {/* Master Data Supplier & Sales Relasi */}
+        {(visit.storeName || visit.salesName) && (
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3.5 space-y-1.5">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-700">
+              Relasi Master Data Supplier &amp; Sales
+            </p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-xs">
+              {visit.storeName && (
+                <div>
+                  <span className="text-ink-soft">Toko Utama:</span>{' '}
+                  <span className="font-bold text-ink">🏪 {visit.storeName}</span>
+                </div>
+              )}
+              {visit.salesName && (
+                <div>
+                  <span className="text-ink-soft">Sales / Divisi:</span>{' '}
+                  <span className="font-bold text-ink">👤 {visit.salesName}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Agenda */}
         {visit.agenda && (

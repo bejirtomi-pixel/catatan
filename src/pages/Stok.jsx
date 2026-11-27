@@ -479,7 +479,7 @@ export default function Stok() {
                             </p>
                           )}
                           {product.description && (
-                            <p className="text-ink-soft leading-relaxed line-clamp-2">
+                            <p className="text-ink-soft leading-relaxed break-words">
                               {product.description}
                             </p>
                           )}

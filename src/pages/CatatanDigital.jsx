@@ -536,7 +536,7 @@ export default function CatatanDigital() {
                         )}
                       </div>
                       {t.notes && (
-                        <p className="line-clamp-1 text-[10px] text-ink-soft italic">“{t.notes}”</p>
+                        <p className="break-words text-[10px] text-ink-soft italic leading-tight">“{t.notes}”</p>
                       )}
                     </TD>
                     <TD className="text-right font-black text-ink">

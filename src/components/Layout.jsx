@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BarChart3, Boxes, CalendarClock, ClipboardList, LayoutDashboard, Menu, Package, Settings, Smartphone } from 'lucide-react';
+import { BarChart3, Boxes, CalendarClock, ClipboardList, HandCoins, LayoutDashboard, Menu, Package, Settings, Smartphone } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { cx } from './UI';
 import Logo from './Logo';
@@ -15,6 +15,7 @@ const MOBILE_NAV = [
   { to: '/barang', label: 'Barang', icon: Package },
   { to: '/pesanan', label: 'Pesanan', icon: ClipboardList },
   { to: '/stok', label: 'Stok', icon: Boxes },
+  { to: '/hutang-piutang', label: 'Hutang', icon: HandCoins },
   { to: '/kunjungan', label: 'Kunjungan', icon: CalendarClock },
   { to: '/catatan-digital', label: 'Digital', icon: Smartphone },
   { to: '/laporan', label: 'Laporan', icon: BarChart3 },
@@ -42,7 +43,7 @@ export default function Layout() {
             <Menu className="h-5 w-5" />
           </button>
           <div className="min-w-0">
-            <p className="truncate text-sm font-bold text-ink">{current ? current.label : 'Warung Madura'}</p>
+            <p className="break-words text-sm font-bold text-ink leading-tight">{current ? current.label : 'Warung Madura'}</p>
             <p className="hidden text-[11px] text-ink-soft sm:block">Catatan Stok &amp; Pesanan</p>
           </div>
           <div className="ml-auto flex items-center gap-2">

@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 
 export default function UserAccountCard({ compact = false }) {
   const { currentUser, logout, ownerUid } = useAuth();
-  const { pushToast } = useApp();
+  const { pushToast, syncStatus } = useApp();
   const [showConfirm, setShowConfirm] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
@@ -48,17 +48,37 @@ export default function UserAccountCard({ compact = false }) {
 
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1">
-              <p className="truncate text-xs font-bold text-ink" title={displayName}>
+              <p className="break-words text-xs font-bold text-ink leading-tight" title={displayName}>
                 {displayName}
               </p>
               <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" title="Akun Terverifikasi" />
             </div>
-            <p className="truncate text-[10px] text-ink-soft" title={email}>
+            <p className="break-all text-[10px] text-ink-soft leading-tight mt-0.5" title={email}>
               {email}
             </p>
-            <p className="text-[9px] font-mono text-ink-soft/80" title={`UID: ${ownerUid}`}>
+            <p className="text-[9px] font-mono text-ink-soft/80 mt-0.5" title={`UID: ${ownerUid}`}>
               UID: {uidShort}
             </p>
+            <div className="mt-1 flex items-center gap-1.5 text-[9px]">
+              <span
+                className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                  !syncStatus?.isOnline
+                    ? 'bg-neutral-400'
+                    : syncStatus?.status === 'syncing'
+                    ? 'bg-amber-500 animate-pulse'
+                    : 'bg-emerald-500'
+                }`}
+              />
+              <span className="font-medium text-ink-soft">
+                {!syncStatus?.isOnline
+                  ? 'Mode Offline (Lokal)'
+                  : syncStatus?.status === 'syncing'
+                  ? 'Menyinkronkan...'
+                  : syncStatus?.stats?.pending > 0
+                  ? `Tersinkron (${syncStatus.stats.pending} antre)`
+                  : 'Tersinkron ke Cloud'}
+              </span>
+            </div>
           </div>
 
           <button

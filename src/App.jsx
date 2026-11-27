@@ -11,6 +11,7 @@ import Stok from './pages/Stok';
 import Laporan from './pages/Laporan';
 import Kunjungan from './pages/Kunjungan';
 import CatatanDigital from './pages/CatatanDigital';
+import HutangPiutang from './pages/HutangPiutang';
 import Pengaturan from './pages/Pengaturan';
 import Login from './pages/Login';
 
@@ -56,6 +57,7 @@ function Shell() {
             <Route path="/toko" element={<Toko />} />
             <Route path="/pesanan" element={<Pesanan />} />
             <Route path="/stok" element={<Stok />} />
+            <Route path="/hutang-piutang" element={<HutangPiutang />} />
             <Route path="/kunjungan" element={<Kunjungan />} />
             <Route path="/catatan-digital" element={<CatatanDigital />} />
             <Route path="/laporan" element={<Laporan />} />

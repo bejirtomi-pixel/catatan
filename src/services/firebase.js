@@ -60,15 +60,24 @@ export const EMULATOR_CONFIG = {
 };
 
 // Deteksi lingkungan:
-// Vite mengeset import.meta.env.DEV = true saat development (npm run dev)
-// import.meta.env.PROD = true saat production build
-const isViteDev = typeof import.meta !== 'undefined' && Boolean(import.meta.env?.DEV);
+// Firebase Emulator HANYA diaktifkan jika:
+// 1. Berjalan di bawah test runner emulator (FIRESTORE_EMULATOR_HOST / FIREBASE_AUTH_EMULATOR_HOST terdefinisi), ATAU
+// 2. Variabel lingkungan VITE_USE_FIREBASE_EMULATOR disetel eksplisit ke 'true'.
+// Mode development default (npm run dev) dan production build menggunakan Firebase Authentication asli secara aman.
+const hasEmulatorHost =
+  typeof process !== 'undefined' &&
+  (Boolean(process.env?.FIRESTORE_EMULATOR_HOST) || Boolean(process.env?.FIREBASE_AUTH_EMULATOR_HOST));
+
 const isExplicitEmulator =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_USE_FIREBASE_EMULATOR === 'true') ||
   (typeof process !== 'undefined' && process.env?.VITE_USE_FIREBASE_EMULATOR === 'true') ||
-  (typeof process !== 'undefined' && Boolean(process.env?.FIRESTORE_EMULATOR_HOST));
+  hasEmulatorHost;
 
-export const shouldConnectEmulator = isViteDev || isExplicitEmulator;
+const isViteDev =
+  (typeof import.meta !== 'undefined' && Boolean(import.meta.env?.DEV)) ||
+  (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development');
+
+export const shouldConnectEmulator = Boolean(isExplicitEmulator);
 
 // Flag global anti-duplicate connection untuk mencegah crash akibat Vite HMR
 const EMULATOR_FLAG = '__CATATAN_FIREBASE_EMULATOR_CONNECTED__';
@@ -264,6 +273,7 @@ export async function loginWithGoogle() {
     const result = await signInWithPopup(auth, googleProvider);
     return { ok: true, user: result.user };
   } catch (err) {
+    console.error('Firebase login error:', err);
     let friendlyMessage = 'Gagal masuk dengan Google.';
     if (err.code === 'auth/popup-closed-by-user') {
       friendlyMessage = 'Jendela login Google ditutup sebelum proses selesai.';
@@ -275,6 +285,8 @@ export async function loginWithGoogle() {
       friendlyMessage = 'Jendela pop-up login diblokir oleh browser. Izinkan pop-up untuk situs ini.';
     } else if (err.code === 'auth/unauthorized-domain') {
       friendlyMessage = 'Domain aplikasi belum didaftarkan di Firebase Authentication console.';
+    } else if (err.code === 'auth/operation-not-allowed') {
+      friendlyMessage = 'Metode login Google belum diaktifkan di Firebase Console (Authentication > Sign-in method).';
     } else if (err?.message) {
       friendlyMessage = err.message;
     }

@@ -27,6 +27,7 @@ import {
   Trash2,
   TrendingDown,
   TrendingUp,
+  Users,
   X,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
@@ -81,6 +82,9 @@ export default function Toko() {
     createStore,
     updateStore,
     deleteStore,
+    addStoreSales,
+    updateStoreSales,
+    deleteStoreSales,
     createOrder,
     priceOfStore,
     priceHistory,
@@ -622,6 +626,11 @@ export default function Toko() {
                                     🛒 Ada Draft
                                   </span>
                                 )}
+                                {Array.isArray(s.sales) && s.sales.length > 0 && (
+                                  <span className="inline-flex items-center gap-1 rounded bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700">
+                                    <Users className="h-3 w-3 inline" /> {s.sales.length} Sales
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -678,7 +687,7 @@ export default function Toko() {
                           {s.address ? (
                             <p className="flex items-start gap-1.5 text-ink-soft">
                               <MapPin className="h-3.5 w-3.5 shrink-0 text-primary mt-0.5" />
-                              <span className="text-[11px] leading-snug line-clamp-2 break-words" title={s.address}>
+                              <span className="text-[11px] leading-snug break-words" title={s.address}>
                                 {s.address}
                               </span>
                             </p>
@@ -687,7 +696,7 @@ export default function Toko() {
                           )}
                           {s.note ? (
                             <p
-                              className="text-[11px] italic text-ink-soft line-clamp-2 leading-relaxed break-words"
+                              className="text-[11px] italic text-ink-soft leading-relaxed break-words"
                               title={s.note}
                             >
                               Catatan: “{s.note}”
@@ -978,10 +987,10 @@ function UnitSelectDropdown({ units, baseUnit, selectedUnitId, onChange, classNa
 
   return (
     <div
-      className={`relative inline-flex h-8 w-full min-w-[70px] max-w-[96px] items-center justify-between rounded-lg border border-line bg-white px-2 text-xs font-semibold text-ink shadow-sm transition hover:border-primary focus-within:border-primary ${className}`}
+      className={`relative inline-flex h-8 w-full min-w-[70px] max-w-[110px] items-center justify-between rounded-lg border border-line bg-white px-2 text-xs font-semibold text-ink shadow-sm transition hover:border-primary focus-within:border-primary ${className}`}
       title={`Satuan aktif: ${selectedUnit.name}`}
     >
-      <span className="truncate pr-3 font-semibold text-ink capitalize">
+      <span className="truncate pr-3 font-semibold text-ink capitalize" title={selectedUnit.name}>
         {selectedUnit.name}
       </span>
       <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-soft" />
@@ -1163,7 +1172,7 @@ function OrderTable({
                         <button
                           type="button"
                           onClick={() => onPreview(p)}
-                          className="text-left font-bold text-ink hover:text-primary transition line-clamp-2 leading-snug break-words"
+                          className="text-left font-bold text-ink hover:text-primary transition leading-snug break-words"
                           title={p.name}
                         >
                           {p.name}
@@ -1188,7 +1197,7 @@ function OrderTable({
 
                       {/* 3. Kategori */}
                       <TD className="text-center py-2 px-1.5">
-                        <span className="inline-block max-w-[80px] truncate rounded-md bg-primary-soft/80 px-2 py-0.5 text-xs font-semibold text-primary" title={p.category || 'Umum'}>
+                        <span className="inline-block break-words rounded-md bg-primary-soft/80 px-2 py-0.5 text-xs font-semibold text-primary" title={p.category || 'Umum'}>
                           {p.category || 'Umum'}
                         </span>
                       </TD>
@@ -1216,7 +1225,7 @@ function OrderTable({
                             className="!h-8 !px-2 !py-1 text-xs !font-bold text-right"
                             inputMode="numeric"
                           />
-                          <p className="mt-0.5 text-[10px] text-ink-soft text-right truncate" title={`Acuan: ${rupiah(effectivePrice)} / ${unit.name}`}>
+                          <p className="mt-0.5 text-[10px] text-ink-soft text-right break-words" title={`Acuan: ${rupiah(effectivePrice)} / ${unit.name}`}>
                             {rupiah(effectivePrice)}
                           </p>
                         </div>
@@ -1341,7 +1350,7 @@ function OrderTable({
                         <button
                           type="button"
                           onClick={() => onPreview(p)}
-                          className="text-left text-xs font-bold text-ink hover:text-primary transition line-clamp-2 leading-snug break-words"
+                          className="text-left text-xs font-bold text-ink hover:text-primary transition leading-snug break-words"
                         >
                           {p.name}
                         </button>
@@ -1394,7 +1403,7 @@ function OrderTable({
                         className="!h-7 !px-2 !py-0 text-xs !font-bold"
                         inputMode="numeric"
                       />
-                      <p className="mt-0.5 text-[10px] text-ink-soft truncate">
+                      <p className="mt-0.5 text-[10px] text-ink-soft break-words">
                         acuan: {rupiah(effectivePrice)}
                       </p>
                     </div>
@@ -1942,8 +1951,8 @@ function PriceComparisonModal({ open, initialProductId, onClose, onSelectStoreAn
                       </span>
                     )}
                     {store.address && (
-                      <span className="flex items-center gap-1 text-[11px] break-words line-clamp-2 max-w-sm" title={store.address}>
-                        <MapPin className="h-3 w-3 text-primary" />
+                      <span className="flex items-start gap-1 text-[11px] break-words" title={store.address}>
+                        <MapPin className="h-3 w-3 text-primary shrink-0 mt-0.5" />
                         {store.address}
                       </span>
                     )}
@@ -2205,119 +2214,394 @@ function PriceHistoryModal({ open, initialStoreId = '', onClose }) {
 }
 
 /* =========================================================================
-   5. StoreDetailModal: Modal Detail Informasi Toko Pemasok
+   5. StoreDetailModal: Modal Detail Informasi Toko Pemasok & Sales / Divisi
    ========================================================================= */
 function StoreDetailModal({ open, store, onClose, onSelectStore, onEdit }) {
-  const { products, orders, priceOfStore } = useApp();
+  const {
+    stores,
+    products,
+    orders,
+    priceOfStore,
+    addStoreSales,
+    updateStoreSales,
+    deleteStoreSales,
+  } = useApp();
+
+  const [salesModalOpen, setSalesModalOpen] = useState(false);
+  const [editingSales, setEditingSales] = useState(null);
+  const [deleteSalesConfirm, setDeleteSalesConfirm] = useState(null);
 
   if (!open || !store) return null;
 
+  // Dapatkan snapshot store terkini dari context (agar penambahan/edit sales langsung ter-update)
+  const currentStore = stores.find((s) => s.id === store.id) || store;
+  const salesList = Array.isArray(currentStore.sales) ? currentStore.sales : [];
+
   const storeProducts = products.filter(
-    (p) => !p.archived && p.active !== false && p.storeIds && p.storeIds.includes(store.id)
+    (p) => !p.archived && p.active !== false && p.storeIds && p.storeIds.includes(currentStore.id)
   );
-  const storeOrders = orders.filter((o) => o.storeId === store.id);
+  const storeOrders = orders.filter((o) => o.storeId === currentStore.id);
+
+  const handleOpenAddSales = () => {
+    setEditingSales(null);
+    setSalesModalOpen(true);
+  };
+
+  const handleOpenEditSales = (sl) => {
+    setEditingSales(sl);
+    setSalesModalOpen(true);
+  };
+
+  const handleSaveSales = (data) => {
+    if (editingSales) {
+      updateStoreSales(currentStore.id, editingSales.id, data);
+    } else {
+      addStoreSales(currentStore.id, data);
+    }
+    setSalesModalOpen(false);
+    setEditingSales(null);
+  };
+
+  const handleDeleteSalesConfirm = () => {
+    if (deleteSalesConfirm) {
+      deleteStoreSales(currentStore.id, deleteSalesConfirm.id);
+      setDeleteSalesConfirm(null);
+    }
+  };
+
+  return (
+    <>
+      <Modal
+        open={open}
+        onClose={onClose}
+        title={`Detail Toko — ${currentStore.name}`}
+        subtitle="Informasi kontak, daftar sales/divisi, serta rincian barang yang tersedia dari toko pemasok ini."
+        size="md"
+        footer={
+          <div className="flex w-full items-center justify-between gap-2">
+            <Btn
+              variant="soft"
+              size="sm"
+              icon={Pencil}
+              onClick={() => onEdit(currentStore)}
+            >
+              Edit Toko
+            </Btn>
+            <div className="flex gap-2">
+              <Btn variant="ghost" size="sm" onClick={onClose}>
+                Tutup
+              </Btn>
+              <Btn
+                size="sm"
+                icon={ShoppingCart}
+                onClick={() => onSelectStore(currentStore.id)}
+              >
+                Pilih Toko Ini
+              </Btn>
+            </div>
+          </div>
+        }
+      >
+        {/* Informasi Umum Toko */}
+        <div className="rounded-xl border border-line bg-primary-soft/40 p-3.5 space-y-2 text-xs">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">Nama Toko Utama</p>
+              <p className="font-extrabold text-ink leading-snug break-words">{currentStore.name}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">Nomor Telepon / Kontak</p>
+              <p className="font-semibold text-ink break-all">{currentStore.phone || '— Belum diatur'}</p>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">Alamat</p>
+            <p className="font-semibold text-ink leading-relaxed break-words">{currentStore.address || '— Belum diatur'}</p>
+          </div>
+
+          {currentStore.note && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">Catatan Toko</p>
+              <p className="italic text-ink leading-relaxed break-words">“{currentStore.note}”</p>
+            </div>
+          )}
+
+          <div className="flex justify-between border-t border-line/60 pt-2 text-[11px] text-ink-soft">
+            <span>Total Riwayat Pesanan: <strong className="text-ink">{storeOrders.length} pesanan</strong></span>
+            <span>Terdaftar sejak: {formatDateTime(currentStore.createdAt)}</span>
+          </div>
+        </div>
+
+        {/* DAFTAR SALES / DIVISI */}
+        <div className="mt-4">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-ink">
+                Daftar Sales / Divisi ({salesList.length})
+              </p>
+              <p className="text-[11px] text-ink-soft">
+                Sales/divisi perwakilan supplier untuk kunjungan & penanganan produk.
+              </p>
+            </div>
+            <Btn
+              size="xs"
+              variant="soft"
+              icon={Plus}
+              onClick={handleOpenAddSales}
+            >
+              Tambah Sales
+            </Btn>
+          </div>
+
+          {salesList.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-line bg-primary-soft/20 p-3 text-center">
+              <p className="text-xs text-ink-soft">
+                Belum ada data sales/divisi untuk toko ini.
+              </p>
+              <p className="mt-0.5 text-[11px] text-ink-soft/80">
+                Contoh: Mayora Sabun, Mayora Biskuit, Sales Wings 1.
+              </p>
+              <button
+                type="button"
+                onClick={handleOpenAddSales}
+                className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-primary hover:underline"
+              >
+                <Plus className="h-3 w-3" /> Tambah Sales Pertama
+              </button>
+            </div>
+          ) : (
+            <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+              {salesList.map((sl) => (
+                <div
+                  key={sl.id}
+                  className="rounded-xl border border-line bg-white p-2.5 text-xs shadow-soft transition hover:border-primary/40"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-indigo-100 text-[10px] font-bold text-indigo-700 shrink-0">
+                          👤
+                        </span>
+                        <p className="font-bold text-ink leading-snug break-words">
+                          {sl.name}
+                        </p>
+                      </div>
+                      {sl.contact && (
+                        <p className="mt-1 text-[11px] text-ink-soft flex items-center gap-1">
+                          <Phone className="h-3 w-3 inline text-ink-soft/70" /> {sl.contact}
+                        </p>
+                      )}
+                      {sl.products && (
+                        <p className="mt-1 text-[11px] text-ink-soft">
+                          <span className="font-semibold text-ink">📦 Produk:</span> {sl.products}
+                        </p>
+                      )}
+                      {sl.notes && (
+                        <p className="mt-0.5 text-[11px] italic text-ink-soft">
+                          “{sl.notes}”
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        title="Edit sales"
+                        onClick={() => handleOpenEditSales(sl)}
+                        className="rounded-lg p-1 text-ink-soft hover:bg-primary-soft hover:text-primary transition"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Hapus sales"
+                        onClick={() => setDeleteSalesConfirm(sl)}
+                        className="rounded-lg p-1 text-ink-soft hover:bg-rose-50 hover:text-rose-600 transition"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Daftar Barang dari Toko Ini */}
+        <div className="mt-4">
+          <p className="text-xs font-bold uppercase tracking-wider text-ink mb-1">
+            Barang Tersedia ({storeProducts.length})
+          </p>
+          {storeProducts.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-line bg-primary-soft/30 p-3 text-center text-xs text-ink-soft">
+              Belum ada barang yang dihubungkan ke toko ini.
+            </p>
+          ) : (
+            <div className="max-h-52 space-y-1.5 overflow-y-auto pr-1">
+              {storeProducts.map((p) => {
+                const units = p.units || [];
+                const linkedSales = salesList.find((sl) => sl.id === p.salesId);
+                return (
+                  <div
+                    key={p.id}
+                    className="flex items-center justify-between rounded-xl border border-line bg-white p-2.5 text-xs shadow-soft"
+                  >
+                    <div className="min-w-0 flex-1 pr-2">
+                      <p className="font-bold text-ink leading-snug break-words">{p.name}</p>
+                      <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                        <span className="text-[11px] text-ink-soft">{p.category || 'Tanpa kategori'}</span>
+                        {linkedSales && (
+                          <span className="inline-flex items-center gap-0.5 rounded bg-indigo-50 border border-indigo-100 px-1.5 py-0.2 text-[10px] font-semibold text-indigo-700">
+                            👤 {linkedSales.name}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      {units.map((u) => {
+                        const pr = priceOfStore(currentStore.id, p.id, u.id);
+                        return (
+                          <p key={u.id} className="text-[11px] font-semibold text-primary">
+                            {rupiah(pr)} / {u.name}
+                          </p>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Modal Form Tambah / Edit Sales */}
+      <SalesFormModal
+        open={salesModalOpen}
+        storeName={currentStore.name}
+        initialData={editingSales}
+        onClose={() => {
+          setSalesModalOpen(false);
+          setEditingSales(null);
+        }}
+        onSubmit={handleSaveSales}
+      />
+
+      {/* Modal Konfirmasi Hapus Sales */}
+      <ConfirmModal
+        open={!!deleteSalesConfirm}
+        title="Hapus Sales / Divisi"
+        message={`Apakah Anda yakin ingin menghapus sales “${deleteSalesConfirm?.name}” dari ${currentStore.name}?`}
+        confirmLabel="Hapus Sales"
+        confirmVariant="danger"
+        onConfirm={handleDeleteSalesConfirm}
+        onClose={() => setDeleteSalesConfirm(null)}
+      />
+    </>
+  );
+}
+
+/* =========================================================================
+   5b. SalesFormModal: Formulir Tambah / Edit Sales / Divisi Supplier
+   ========================================================================= */
+function SalesFormModal({ open, storeName, initialData, onClose, onSubmit }) {
+  const [name, setName] = useState('');
+  const [contact, setContact] = useState('');
+  const [products, setProducts] = useState('');
+  const [notes, setNotes] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (open) {
+      setName(initialData?.name || '');
+      setContact(initialData?.contact || '');
+      setProducts(initialData?.products || '');
+      setNotes(initialData?.notes || initialData?.note || '');
+      setError('');
+    }
+  }, [open, initialData]);
+
+  if (!open) return null;
+
+  const handleSubmit = (e) => {
+    e?.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError('Nama sales / divisi wajib diisi.');
+      return;
+    }
+    onSubmit({
+      name: trimmed,
+      contact: contact.trim(),
+      products: products.trim(),
+      notes: notes.trim(),
+    });
+  };
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title={`Detail Toko — ${store.name}`}
-      subtitle="Informasi kontak, alamat, serta rincian barang yang tersedia dari toko ini."
-      size="md"
+      title={initialData ? `Edit Sales — ${initialData.name}` : 'Tambah Sales / Divisi'}
+      subtitle={`Sales perwakilan untuk toko pemasok “${storeName}”.`}
+      size="sm"
       footer={
-        <div className="flex w-full items-center justify-between gap-2">
-          <Btn
-            variant="soft"
-            size="sm"
-            icon={Pencil}
-            onClick={() => onEdit(store)}
-          >
-            Edit Toko
+        <div className="flex w-full items-center justify-end gap-2">
+          <Btn variant="ghost" size="sm" onClick={onClose}>
+            Batal
           </Btn>
-          <div className="flex gap-2">
-            <Btn variant="ghost" size="sm" onClick={onClose}>
-              Tutup
-            </Btn>
-            <Btn
-              size="sm"
-              icon={ShoppingCart}
-              onClick={() => onSelectStore(store.id)}
-            >
-              Pilih Toko Ini
-            </Btn>
-          </div>
+          <Btn size="sm" onClick={handleSubmit}>
+            {initialData ? 'Simpan Perubahan' : 'Tambah Sales'}
+          </Btn>
         </div>
       }
     >
-      {/* Informasi Umum Toko */}
-      <div className="rounded-xl border border-line bg-primary-soft/40 p-3.5 space-y-2 text-xs">
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">Nama Toko</p>
-            <p className="font-extrabold text-ink leading-snug break-words">{store.name}</p>
-          </div>
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">Nomor Telepon / Kontak</p>
-            <p className="font-semibold text-ink break-all">{store.phone || '— Belum diatur'}</p>
-          </div>
-        </div>
-
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">Alamat</p>
-          <p className="font-semibold text-ink leading-relaxed break-words">{store.address || '— Belum diatur'}</p>
-        </div>
-
-        {store.note && (
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft">Catatan Toko</p>
-            <p className="italic text-ink leading-relaxed break-words">“{store.note}”</p>
-          </div>
-        )}
-
-        <div className="flex justify-between border-t border-line/60 pt-2 text-[11px] text-ink-soft">
-          <span>Total Riwayat Pesanan: <strong className="text-ink">{storeOrders.length} pesanan</strong></span>
-          <span>Terdaftar sejak: {formatDateTime(store.createdAt)}</span>
-        </div>
-      </div>
-
-      {/* Daftar Barang dari Toko Ini */}
-      <div className="mt-4">
-        <p className="text-xs font-bold uppercase tracking-wider text-ink">
-          Barang Tersedia ({storeProducts.length})
-        </p>
-        {storeProducts.length === 0 ? (
-          <p className="mt-2 rounded-xl border border-dashed border-line bg-primary-soft/30 p-3 text-center text-xs text-ink-soft">
-            Belum ada barang yang dihubungkan ke toko ini.
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div className="rounded-lg bg-indigo-50/70 border border-indigo-100 p-2.5 text-xs text-indigo-900">
+          <p className="font-semibold text-indigo-800">🏪 Toko Utama: <span className="font-bold">{storeName}</span></p>
+          <p className="text-[11px] text-indigo-700/80 mt-0.5">
+            Nama toko utama otomatis terhubung tanpa perlu diketik ulang.
           </p>
-        ) : (
-          <div className="mt-2 max-h-56 space-y-1.5 overflow-y-auto pr-1">
-            {storeProducts.map((p) => {
-              const units = p.units || [];
-              return (
-                <div
-                  key={p.id}
-                  className="flex items-center justify-between rounded-xl border border-line bg-white p-2.5 text-xs shadow-soft"
-                >
-                  <div>
-                    <p className="font-bold text-ink leading-snug break-words">{p.name}</p>
-                    <p className="text-[11px] text-ink-soft">{p.category || 'Tanpa kategori'}</p>
-                  </div>
-                  <div className="text-right">
-                    {units.map((u) => {
-                      const pr = priceOfStore(store.id, p.id, u.id);
-                      return (
-                        <p key={u.id} className="text-[11px] font-semibold text-primary">
-                          {rupiah(pr)} / {u.name}
-                        </p>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+        </div>
+
+        <Field label="Nama Sales / Divisi" required error={error}>
+          <Input
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (error) setError('');
+            }}
+            placeholder="contoh: Mayora Sabun, Mayora Biskuit, Sales Wings 1"
+            autoFocus
+          />
+        </Field>
+
+        <Field label="Nomor Kontak / WhatsApp (Opsional)">
+          <Input
+            value={contact}
+            onChange={(e) => setContact(e.target.value)}
+            placeholder="contoh: 081234567890"
+          />
+        </Field>
+
+        <Field label="Produk yang Ditangani (Opsional)">
+          <Input
+            value={products}
+            onChange={(e) => setProducts(e.target.value)}
+            placeholder="contoh: Sabun Mandi, Deterjen, Pembersih Lantai"
+          />
+        </Field>
+
+        <Field label="Catatan / Jadwal Sales (Opsional)">
+          <Textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            placeholder="contoh: Kunjungan rutin setiap hari Senin jam 10 pagi"
+          />
+        </Field>
+      </form>
     </Modal>
   );
 }
@@ -2568,7 +2852,7 @@ function ManagePriceModal({ open, initialStoreId = '', onClose }) {
                   />
                   <ProductImage product={l.product} size="sm" />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-bold text-ink leading-snug line-clamp-2 break-words" title={l.product.name}>{l.product.name}</p>
+                    <p className="text-sm font-bold text-ink leading-snug break-words" title={l.product.name}>{l.product.name}</p>
                     <p className="text-[11px] text-ink-soft">
                       {l.unitName}
                       {l.unitFactor !== 1 && (
@@ -2640,7 +2924,7 @@ function ManagePriceModal({ open, initialStoreId = '', onClose }) {
                       key={l.key}
                       className="grid grid-cols-1 gap-0.5 rounded-lg bg-white/70 px-2.5 py-1.5 text-xs sm:grid-cols-[1fr_110px_110px] sm:items-center sm:gap-2"
                     >
-                      <p className="font-semibold text-ink leading-snug line-clamp-2 break-words">
+                      <p className="font-semibold text-ink leading-snug break-words">
                         {l.product.name} — {l.unitName}
                       </p>
                       <p className="text-right text-ink-soft sm:pr-2">{rupiah(l.oldPrice)}</p>
@@ -2679,7 +2963,7 @@ function ManagePriceModal({ open, initialStoreId = '', onClose }) {
                         key={h.id}
                         className="grid grid-cols-1 gap-0.5 rounded-lg bg-primary-soft/30 px-2.5 py-1.5 text-xs sm:grid-cols-[1fr_auto] sm:items-center sm:gap-2"
                       >
-                        <p className="font-semibold text-ink leading-snug line-clamp-2 break-words">
+                        <p className="font-semibold text-ink leading-snug break-words">
                           {h.productNameSnapshot} — {h.unitName}
                         </p>
                         <p className="text-ink-soft sm:text-right">

@@ -45,21 +45,21 @@ export default function OperatorSwitcher({ compact = false }) {
         <span className="flex h-5 w-5 items-center justify-center rounded-lg bg-primary-soft text-primary">
           <User className="h-3 w-3" />
         </span>
-        <span className="max-w-[90px] truncate sm:max-w-[120px] font-bold">
+        <span className="max-w-[120px] truncate sm:max-w-[180px] font-bold" title={activeOperator.name}>
           {activeOperator.name}
         </span>
         <ChevronDown className={cx('h-3.5 w-3.5 text-ink-soft transition-transform', open && 'rotate-180')} />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-48 rounded-2xl border border-line bg-surface p-1.5 shadow-lg animate-in fade-in zoom-in-95 duration-100">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-56 rounded-2xl border border-line bg-surface p-1.5 shadow-lg animate-in fade-in zoom-in-95 duration-100">
           <div className="px-2.5 py-1.5 border-b border-line mb-1">
             <p className="text-[10px] font-bold uppercase tracking-wider text-ink-soft flex items-center gap-1">
               <Users className="h-3 w-3 text-primary" />
               <span>Operator Bertugas</span>
             </p>
           </div>
-          <div className="max-h-48 space-y-0.5 overflow-y-auto">
+          <div className="max-h-56 space-y-0.5 overflow-y-auto">
             {activeList.map((op) => {
               const isSelected = op.id === activeOperatorId;
               return (
@@ -68,13 +68,13 @@ export default function OperatorSwitcher({ compact = false }) {
                   type="button"
                   onClick={() => handleSelect(op)}
                   className={cx(
-                    'flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-xs font-medium transition',
+                    'flex w-full items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-xs font-medium transition text-left',
                     isSelected
                       ? 'bg-primary text-white font-bold'
                       : 'text-ink hover:bg-primary-soft/60'
                   )}
                 >
-                  <span className="truncate">{op.name}</span>
+                  <span className="break-words leading-tight flex-1">{op.name}</span>
                   {isSelected && <Check className="h-3.5 w-3.5 shrink-0" />}
                 </button>
               );

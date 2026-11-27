@@ -18,6 +18,8 @@ import {
   getDoc,
   setDoc,
   runTransaction,
+  collection,
+  getDocs,
 } from 'firebase/firestore';
 import {
   QUEUE_STATUS,
@@ -31,8 +33,22 @@ import {
   recoverStaleProcessingOperations,
 } from './offlineQueue.js';
 
-// Domain yang aktif disinkronkan pada Fase 3A (HANYA pilot Toko Pemasok)
+// Domain yang aktif disinkronkan pada Fase 3A (HANYA pilot Toko Pemasok untuk backward compatibility)
 export const ACTIVE_SYNC_DOMAINS = ['suppliers'];
+
+// Seluruh Domain yang didukung untuk sinkronisasi penuh pada Fase 3
+export const ALL_SYNC_DOMAINS = [
+  'suppliers',
+  'products',
+  'stocks',
+  'movements',
+  'orders',
+  'shortages',
+  'visits',
+  'digital_transactions',
+  'debts',
+  'meta_settings',
+];
 
 // Status Sinkronisasi Mesin
 export const SYNC_ENGINE_STATUS = {
@@ -49,7 +65,7 @@ let syncState = {
   isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
   isLeader: false,
   activeOwnerUid: null,
-  activeDomains: [...ACTIVE_SYNC_DOMAINS],
+  activeDomains: [...ALL_SYNC_DOMAINS],
   lastSyncAt: null,
   lastError: null,
   stats: {
@@ -232,6 +248,7 @@ export function validateSupplierPayload(operation) {
   const phone = payload.phone != null ? String(payload.phone).trim() : '';
   const address = payload.address != null ? String(payload.address).trim() : '';
   const note = payload.note != null ? String(payload.note).trim() : '';
+  const sales = Array.isArray(payload.sales) ? payload.sales : [];
   const nowIso = new Date().toISOString();
   const updatedAt = payload.updatedAt && String(payload.updatedAt).length >= 19 ? payload.updatedAt : nowIso;
   const createdAt = payload.createdAt || nowIso;
@@ -244,6 +261,7 @@ export function validateSupplierPayload(operation) {
       phone,
       address,
       note,
+      ...(sales.length > 0 ? { sales } : {}),
       createdAt,
       updatedAt,
     },
@@ -251,21 +269,316 @@ export function validateSupplierPayload(operation) {
 }
 
 /**
- * Menghitung jeda waktu percobaan ulang dengan eksponensial backoff dan jitter
+ * Validasi Payload untuk Seluruh Entitas Operasional Warung (Fase 3)
+ * Memastikan payload memenuhi aturan bisnis lokal dan firestore.rules
  */
-export function calculateBackoffMs(retryCount, baseMs = 1500, maxMs = 30000) {
-  const exp = Math.min(retryCount, 5);
-  const factor = Math.pow(2, exp);
-  const jitter = Math.random() * 500;
-  return Math.min(baseMs * factor + jitter, maxMs);
+export function validateEntityPayload(operation) {
+  if (!operation || typeof operation !== 'object') {
+    return { ok: false, error: 'Operasi tidak valid.' };
+  }
+
+  const { operationType, entityType, payload, entityId } = operation;
+  const opType = String(operationType || '').toUpperCase();
+
+  if (opType !== 'CREATE' && opType !== 'UPDATE' && opType !== 'DELETE') {
+    return { ok: false, error: `Tipe operasi ${operationType} tidak didukung.` };
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return { ok: false, error: `Payload operasi ${entityType} wajib berupa objek.` };
+  }
+
+  // Khusus domain suppliers, gunakan validator khusus yang sudah ada
+  if (entityType === 'suppliers') {
+    return validateSupplierPayload(operation);
+  }
+
+  const nowIso = new Date().toISOString();
+  const id = String(payload.id || entityId || '').trim();
+
+  // Khusus DELETE untuk entitas ber-ID
+  if (opType === 'DELETE') {
+    if (!id && entityType !== 'meta_settings') {
+      return { ok: false, error: `ID ${entityType} wajib diisi untuk operasi DELETE.` };
+    }
+    return { ok: true, validatedData: { id } };
+  }
+
+  // Validasi per domain untuk CREATE dan UPDATE:
+  switch (entityType) {
+    case 'products': {
+      if (!id) return { ok: false, error: 'ID produk wajib diisi.' };
+      const name = String(payload.name || '').trim();
+      if (!name) return { ok: false, error: 'Nama produk wajib diisi dan tidak boleh kosong.' };
+
+      // Firestore rules mewajibkan request.resource.data.units is list
+      const units = Array.isArray(payload.units) && payload.units.length > 0
+        ? payload.units
+        : [{ id: 'u-pcs', name: 'pcs', factor: 1, price: 0 }];
+
+      const storeIds = Array.isArray(payload.storeIds) ? payload.storeIds : [];
+      const salesId = payload.salesId ? String(payload.salesId).trim() : null;
+      const category = payload.category ? String(payload.category).trim() : '';
+      const isArchived = Boolean(payload.isArchived);
+      const updatedAt = payload.updatedAt && String(payload.updatedAt).length >= 19 ? payload.updatedAt : nowIso;
+      const createdAt = payload.createdAt || nowIso;
+
+      return {
+        ok: true,
+        validatedData: {
+          id,
+          name,
+          category,
+          units,
+          storeIds,
+          salesId,
+          isArchived,
+          createdAt,
+          updatedAt,
+        },
+      };
+    }
+
+    case 'stocks': {
+      const productId = String(payload.productId || id).trim();
+      if (!productId) return { ok: false, error: 'productId wajib diisi pada stok.' };
+      const quantity = typeof payload.quantity === 'number' ? payload.quantity : (Number(payload.quantity) || 0);
+      const hasStockAnomaly = quantity < 0;
+      const sellingPrice = typeof payload.sellingPrice === 'number' ? payload.sellingPrice : (Number(payload.sellingPrice) || 0);
+      const sellingPrices = payload.sellingPrices && typeof payload.sellingPrices === 'object' ? payload.sellingPrices : {};
+      const note = payload.note ? String(payload.note).trim() : '';
+      const updatedAt = payload.updatedAt && String(payload.updatedAt).length >= 19 ? payload.updatedAt : nowIso;
+      const createdAt = payload.createdAt || nowIso;
+
+      return {
+        ok: true,
+        validatedData: {
+          id: productId,
+          productId,
+          quantity,
+          hasStockAnomaly,
+          sellingPrice,
+          sellingPrices,
+          note,
+          createdAt,
+          updatedAt,
+        },
+      };
+    }
+
+    case 'movements': {
+      const productId = String(payload.productId || id).trim();
+      if (!productId) return { ok: false, error: 'productId wajib diisi pada movement mutasi.' };
+      const diffBase = typeof payload.diffBase === 'number' ? payload.diffBase : (Number(payload.diffBase) || 0);
+      const operatorName = payload.operator?.operatorName || payload.operatorName || 'Operator Warung';
+      const timestamp = payload.timestamp && String(payload.timestamp).length >= 19 ? payload.timestamp : (payload.updatedAt || nowIso);
+      const type = payload.type ? String(payload.type).trim() : 'adjustment';
+      const reason = payload.reason ? String(payload.reason).trim() : '';
+
+      return {
+        ok: true,
+        validatedData: {
+          id: operation.opId || id,
+          productId,
+          diffBase,
+          operator: { operatorName },
+          timestamp,
+          type,
+          reason,
+        },
+      };
+    }
+
+    case 'orders': {
+      if (!id) return { ok: false, error: 'ID order wajib diisi.' };
+      const storeId = payload.storeId ? String(payload.storeId).trim() : '';
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      let rawStatus = String(payload.status || 'menunggu').toLowerCase();
+      let status = 'menunggu';
+      if (rawStatus === 'selesai' || rawStatus === 'diterima') status = 'selesai';
+      else if (rawStatus === 'sebagian') status = 'sebagian';
+      else if (rawStatus === 'batal' || rawStatus === 'dibatalkan') status = 'dibatalkan';
+
+      const totalPrice = typeof payload.totalPrice === 'number' ? payload.totalPrice : (Number(payload.totalPrice) || 0);
+      const receipts = Array.isArray(payload.receipts) ? payload.receipts : [];
+      const cancelReason = payload.cancelReason ? String(payload.cancelReason).trim() : '';
+      const updatedAt = payload.updatedAt && String(payload.updatedAt).length >= 19 ? payload.updatedAt : nowIso;
+      const createdAt = payload.createdAt || nowIso;
+
+      return {
+        ok: true,
+        validatedData: {
+          id,
+          storeId,
+          items,
+          status,
+          totalPrice,
+          receipts,
+          cancelReason,
+          createdAt,
+          updatedAt,
+        },
+      };
+    }
+
+    case 'shortages': {
+      if (!id) return { ok: false, error: 'ID shortage wajib diisi.' };
+      const productId = String(payload.productId || '').trim();
+      if (!productId) return { ok: false, error: 'productId wajib diisi pada shortage kekurangan barang.' };
+      const orderId = payload.orderId ? String(payload.orderId).trim() : '';
+      const quantity = Math.max(0.01, typeof payload.quantity === 'number' ? payload.quantity : (Number(payload.quantity) || 1));
+      const status = payload.status ? String(payload.status).trim() : 'belum';
+      const repurchases = Array.isArray(payload.repurchases) ? payload.repurchases : [];
+      const updatedAt = payload.updatedAt && String(payload.updatedAt).length >= 19 ? payload.updatedAt : nowIso;
+      const createdAt = payload.createdAt || nowIso;
+
+      return {
+        ok: true,
+        validatedData: {
+          id,
+          orderId,
+          productId,
+          quantity,
+          status,
+          repurchases,
+          createdAt,
+          updatedAt,
+        },
+      };
+    }
+
+    case 'visits': {
+      if (!id) return { ok: false, error: 'ID kunjungan wajib diisi.' };
+      const name = String(payload.name || payload.target || payload.title || '').trim();
+      if (!name) return { ok: false, error: 'Nama/target kunjungan wajib diisi.' };
+      const storeId = payload.storeId ? String(payload.storeId).trim() : '';
+      const salesId = payload.salesId ? String(payload.salesId).trim() : '';
+      const date = payload.date ? String(payload.date).trim() : nowIso.slice(0, 10);
+      const agenda = payload.agenda ? String(payload.agenda).trim() : '';
+      const status = payload.status ? String(payload.status).trim() : 'scheduled';
+      const notes = payload.notes ? String(payload.notes).trim() : '';
+      const recurrence = payload.recurrence || 'none';
+      const updatedAt = payload.updatedAt && String(payload.updatedAt).length >= 19 ? payload.updatedAt : nowIso;
+      const createdAt = payload.createdAt || nowIso;
+
+      return {
+        ok: true,
+        validatedData: {
+          id,
+          name,
+          storeId,
+          salesId,
+          date,
+          agenda,
+          status,
+          notes,
+          recurrence,
+          createdAt,
+          updatedAt,
+        },
+      };
+    }
+
+    case 'digital_transactions': {
+      if (!id) return { ok: false, error: 'ID transaksi digital wajib diisi.' };
+      const category = String(payload.category || 'pulsa').trim();
+      const serviceAmount = Math.max(0, typeof payload.serviceAmount === 'number' ? payload.serviceAmount : (Number(payload.serviceAmount) || 0));
+      const adminFee = Math.max(0, typeof payload.adminFee === 'number' ? payload.adminFee : (Number(payload.adminFee) || 0));
+      const totalReceived = Math.max(0, typeof payload.totalReceived === 'number' ? payload.totalReceived : (Number(payload.totalReceived) || (serviceAmount + adminFee)));
+      const profit = Math.max(0, typeof payload.profit === 'number' ? payload.profit : (Number(payload.profit) || 0));
+      const paymentMethod = payload.paymentMethod ? String(payload.paymentMethod).trim() : 'cash';
+      const status = payload.status ? String(payload.status).trim() : 'completed';
+      const customerName = payload.customerName ? String(payload.customerName).trim() : '';
+      const customerPhone = payload.customerPhone ? String(payload.customerPhone).trim() : '';
+      const targetNumber = payload.targetNumber ? String(payload.targetNumber).trim() : '';
+      const notes = payload.notes ? String(payload.notes).trim() : '';
+      const updatedAt = payload.updatedAt && String(payload.updatedAt).length >= 19 ? payload.updatedAt : nowIso;
+      const createdAt = payload.createdAt || nowIso;
+
+      return {
+        ok: true,
+        validatedData: {
+          id,
+          category,
+          serviceAmount,
+          adminFee,
+          totalReceived,
+          profit,
+          paymentMethod,
+          status,
+          customerName,
+          customerPhone,
+          targetNumber,
+          notes,
+          createdAt,
+          updatedAt,
+        },
+      };
+    }
+
+    case 'debts': {
+      if (!id) return { ok: false, error: 'ID hutang-piutang wajib diisi.' };
+      const name = String(payload.name || payload.partyName || '').trim();
+      if (!name) return { ok: false, error: 'Nama pihak pada hutang-piutang wajib diisi.' };
+      const type = payload.type === 'hutang' ? 'hutang' : 'piutang';
+      const amount = Math.max(0, typeof payload.amount === 'number' ? payload.amount : (Number(payload.amount) || 0));
+      const paid = Math.max(0, typeof payload.paid === 'number' ? payload.paid : (Number(payload.paid) || 0));
+      const remaining = Math.max(0, typeof payload.remaining === 'number' ? payload.remaining : Math.max(0, amount - paid));
+      const status = payload.status ? String(payload.status).trim() : (remaining <= 0 ? 'lunas' : 'belum_lunas');
+      const dueDate = payload.dueDate || null;
+      const payments = Array.isArray(payload.payments) ? payload.payments : [];
+      const notes = payload.notes ? String(payload.notes).trim() : '';
+      const updatedAt = payload.updatedAt && String(payload.updatedAt).length >= 19 ? payload.updatedAt : nowIso;
+      const createdAt = payload.createdAt || nowIso;
+
+      return {
+        ok: true,
+        validatedData: {
+          id,
+          name,
+          type,
+          amount,
+          paid,
+          remaining,
+          status,
+          dueDate,
+          payments,
+          notes,
+          createdAt,
+          updatedAt,
+        },
+      };
+    }
+
+    case 'meta_settings': {
+      const storeName = payload.storeName ? String(payload.storeName).trim() : 'Warung Madura';
+      const notifications = payload.notifications && typeof payload.notifications === 'object' ? payload.notifications : {};
+      const updatedAt = payload.updatedAt && String(payload.updatedAt).length >= 19 ? payload.updatedAt : nowIso;
+      const createdAt = payload.createdAt || nowIso;
+
+      return {
+        ok: true,
+        validatedData: {
+          id: 'settings',
+          storeName,
+          notifications,
+          createdAt,
+          updatedAt,
+        },
+      };
+    }
+
+    default:
+      return { ok: false, error: `Domain entityType "${entityType}" tidak dikenali.` };
+  }
 }
 
 /**
- * Eksekusi Transaksi Atomik Firestore untuk Operasi Supplier Tunggal
+ * Eksekusi Transaksi Atomik Firestore untuk Seluruh Entitas (Fase 3)
  * Menjamin Idempotensi Server via /stores_app/{tenantId}/operations_log/{opId}
  */
-export async function executeSupplierTransaction(operation, options = {}) {
-  const { opId, ownerUid, operationType, entityId } = operation;
+export async function executeEntityTransaction(operation, options = {}) {
+  const { opId, ownerUid, operationType, entityType = 'suppliers', entityId } = operation;
   const firestoreDb = options.customDb || defaultDb;
   const tenantId = options.tenantId || resolveTenantId(ownerUid);
 
@@ -274,7 +587,7 @@ export async function executeSupplierTransaction(operation, options = {}) {
   }
 
   // 1. Validasi Payload
-  const validation = validateSupplierPayload(operation);
+  const validation = validateEntityPayload(operation);
   if (!validation.ok) {
     return {
       success: false,
@@ -283,6 +596,7 @@ export async function executeSupplierTransaction(operation, options = {}) {
     };
   }
   const cleanData = validation.validatedData;
+  const docId = entityType === 'meta_settings' ? 'settings' : (cleanData.id || entityId);
 
   // 2. Transaksi Atomik Firestore
   const result = await runTransaction(firestoreDb, async (transaction) => {
@@ -312,38 +626,58 @@ export async function executeSupplierTransaction(operation, options = {}) {
       return {
         alreadyExecuted: true,
         opId,
-        entityId: cleanData.id,
+        entityId: docId,
+        entityType,
       };
     }
 
-    // C. Mutasi Entitas Supplier
-    const supplierRef = doc(firestoreDb, 'stores_app', tenantId, 'suppliers', cleanData.id);
+    // C. Dapatkan referensi dokumen target
+    let targetRef;
+    if (entityType === 'meta_settings') {
+      targetRef = doc(firestoreDb, 'stores_app', tenantId, 'meta', 'settings');
+    } else {
+      targetRef = doc(firestoreDb, 'stores_app', tenantId, entityType, docId);
+    }
+
     const opType = String(operationType).toUpperCase();
 
     if (opType === 'DELETE') {
-      transaction.delete(supplierRef);
+      transaction.delete(targetRef);
     } else {
-      transaction.set(
-        supplierRef,
-        {
-          id: cleanData.id,
-          name: cleanData.name,
-          phone: cleanData.phone,
-          address: cleanData.address,
-          note: cleanData.note,
-          createdAt: cleanData.createdAt,
-          updatedAt: cleanData.updatedAt,
-        },
-        { merge: true }
-      );
+      // Khusus penanganan stok agar mematuhi isValidStockUpdate pada firestore.rules
+      if (entityType === 'stocks') {
+        const existingStockSnap = await transaction.get(targetRef);
+        if (existingStockSnap.exists()) {
+          const prevStock = existingStockSnap.data() || {};
+          const prevQty = typeof prevStock.quantity === 'number' ? prevStock.quantity : 0;
+          const newQty = cleanData.quantity;
+          if (prevQty !== newQty) {
+            const diffBase = Number((newQty - prevQty).toFixed(2));
+            cleanData.lastReconciledOpId = opId;
+            // Buat dokumen movement mutasi yang sinkron dalam transaksi yang sama
+            const movementRef = doc(firestoreDb, 'stores_app', tenantId, 'movements', opId);
+            transaction.set(movementRef, {
+              id: opId,
+              productId: cleanData.productId,
+              diffBase,
+              operator: { operatorName: operation.operatorName || 'Operator Warung' },
+              timestamp: cleanData.updatedAt || new Date().toISOString(),
+              type: 'sync_adjustment',
+              reason: operation.payload?.reason || 'Penyesuaian stok tersinkronisasi',
+            });
+          }
+        }
+      }
+
+      transaction.set(targetRef, cleanData, { merge: true });
     }
 
     // D. Catat Ledger Abadi Transaksi Server
     transaction.set(opLogRef, {
       opId,
       ownerUid,
-      entityType: 'suppliers',
-      entityId: cleanData.id,
+      entityType,
+      entityId: docId,
       operationType: opType,
       clientTimestamp: operation.createdAt || new Date().toISOString(),
       syncedAt: new Date().toISOString(),
@@ -352,7 +686,8 @@ export async function executeSupplierTransaction(operation, options = {}) {
     return {
       alreadyExecuted: false,
       opId,
-      entityId: cleanData.id,
+      entityId: docId,
+      entityType,
       operationType: opType,
     };
   });
@@ -361,7 +696,42 @@ export async function executeSupplierTransaction(operation, options = {}) {
 }
 
 /**
- * Satu Siklus Pengurasan Antrean (Queue Drain Cycle)
+ * Eksekusi Transaksi Atomik Firestore untuk Operasi Supplier Tunggal (Fase 3A Pilot Wrapper)
+ * Menjamin Idempotensi Server via /stores_app/{tenantId}/operations_log/{opId}
+ */
+export async function executeSupplierTransaction(operation, options = {}) {
+  return executeEntityTransaction(
+    { ...operation, entityType: operation.entityType || 'suppliers' },
+    options
+  );
+}
+
+/**
+ * Menghitung jeda waktu percobaan ulang dengan eksponensial backoff dan jitter
+ */
+export function calculateBackoffMs(retryCount, baseMs = 1500, maxMs = 30000) {
+  const exp = Math.min(retryCount, 5);
+  const factor = Math.pow(2, exp);
+  const jitter = Math.random() * 500;
+  return Math.min(baseMs * factor + jitter, maxMs);
+}
+
+/**
+ * Handler pembaruan data remote untuk sinkronisasi bi-directional (Pull)
+ */
+let cloudUpdateHandler = null;
+
+export function registerCloudUpdateHandler(handler) {
+  cloudUpdateHandler = handler;
+  return () => {
+    if (cloudUpdateHandler === handler) {
+      cloudUpdateHandler = null;
+    }
+  };
+}
+
+/**
+ * Satu Siklus Pengurasan Antrean (Queue Drain Cycle - PUSH)
  * Mengambil operasi pending milik owner, mengklaim atomik, memproses, dan memperbarui status
  */
 export async function processQueueCycle(ownerUid, options = {}) {
@@ -413,9 +783,10 @@ export async function processQueueCycle(ownerUid, options = {}) {
 
     const pendingList = await getPendingOperations(ownerUid, customFactory);
 
-    // Filter ketat: HANYA domain yang aktif (Fase 3A: suppliers)
+    // Filter: gunakan domain yang aktif (mendukung seluruh modul ALL_SYNC_DOMAINS atau custom per opsi)
+    const allowedDomains = options.domains || syncState.activeDomains || ALL_SYNC_DOMAINS;
     const eligibleOps = pendingList.filter((op) =>
-      ACTIVE_SYNC_DOMAINS.includes(op.entityType)
+      allowedDomains.includes(op.entityType)
     );
 
     // Pastikan dokumen root tenant warung sudah ter-provisioning sebelum memproses operasi subcollection (Fase 3A.6: RSK-05)
@@ -456,8 +827,8 @@ export async function processQueueCycle(ownerUid, options = {}) {
       const claimedOp = claimRes.operation;
 
       try {
-        // 2. Eksekusi Transaksi Server
-        const txResult = await executeSupplierTransaction(claimedOp, options);
+        // 2. Eksekusi Transaksi Server (Seluruh Domain Operasional)
+        const txResult = await executeEntityTransaction(claimedOp, options);
 
         if (!txResult.success && txResult.validationError) {
           // Kesalahan validasi payload: tandai gagal permanen (tidak retry otomatis)
@@ -706,12 +1077,146 @@ export async function executeSupplierBackfill(localStores = [], ownerUid, option
 }
 
 /**
- * Pemicu Sinkronisasi Segera (Manual atau Reaktif saat Enqueue)
+ * Tarik Pembaruan Data dari Cloud Firestore ke Lokal (Bi-directional PULL)
+ * Menerapkan Conflict Shielding: data di cloud tidak akan menimpa mutasi lokal yang sedang pending/processing.
+ * Menggunakan perbandingan updatedAt untuk Last-Write-Wins.
  */
-export async function triggerSyncNow({ ownerUid, customDb, customFactory } = {}) {
+export async function pullCloudUpdates(ownerUid, options = {}) {
+  if (!ownerUid) {
+    return { ok: false, error: 'ownerUid wajib diisi untuk pull update.' };
+  }
+
+  const isOnline = options.forceOnline !== undefined
+    ? options.forceOnline
+    : typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean'
+    ? navigator.onLine
+    : true;
+
+  if (!isOnline) {
+    return { ok: false, offline: true, error: 'Perangkat sedang dalam mode offline.' };
+  }
+
+  const firestoreDb = options.customDb || defaultDb;
+  const customFactory = options.customFactory;
+  const tenantId = options.tenantId || resolveTenantId(ownerUid);
+
+  if (!tenantId) {
+    return { ok: false, error: 'Tenant ID tidak dapat ditentukan dari ownerUid.' };
+  }
+
+  // 1. Dapatkan daftar entitas yang sedang dalam status PENDING atau PROCESSING di IndexedDB
+  // Entitas ini memiliki mutasi lokal yang belum ter-push, sehingga dilindungi dari penimpaan (Conflict Shielding)
+  const pendingOps = await getQueueItems({ ownerUid, status: QUEUE_STATUS.PENDING }, customFactory);
+  const processingOps = await getQueueItems({ ownerUid, status: QUEUE_STATUS.PROCESSING }, customFactory);
+  const shieldedKeys = new Set();
+  for (const op of [...pendingOps, ...processingOps]) {
+    if (op.entityType && op.entityId) {
+      shieldedKeys.add(`${op.entityType}:${op.entityId}`);
+    }
+  }
+
+  const allowedDomains = options.domains || syncState.activeDomains || ALL_SYNC_DOMAINS;
+  const pulledData = {};
+  let totalPulled = 0;
+  let shieldedCount = 0;
+
+  for (const domain of allowedDomains) {
+    // movements dan operations_log adalah append-only audit trail server, tidak ditarik ke state lokal
+    if (domain === 'movements' || domain === 'operations_log') continue;
+
+    try {
+      if (domain === 'meta_settings') {
+        const settingsRef = doc(firestoreDb, 'stores_app', tenantId, 'meta', 'settings');
+        const snap = await getDoc(settingsRef);
+        if (snap.exists()) {
+          pulledData.meta_settings = snap.data();
+          totalPulled++;
+        }
+      } else {
+        const colRef = collection(firestoreDb, 'stores_app', tenantId, domain);
+        const colSnap = await getDocs(colRef);
+        const items = [];
+        colSnap.forEach((docSnap) => {
+          const item = docSnap.data();
+          const docId = docSnap.id;
+          if (shieldedKeys.has(`${domain}:${docId}`)) {
+            shieldedCount++;
+            return; // Mutasi lokal belum ter-push: lindungi data lokal dari penimpaan remote
+          }
+          items.push({ id: docId, ...item });
+        });
+        pulledData[domain] = items;
+        totalPulled += items.length;
+      }
+    } catch (_colErr) {
+      pulledData[domain] = [];
+    }
+  }
+
+  // Tarik catatan penghapusan (deletions) dari server-side operations_log untuk propagasi multi-perangkat
+  const deletions = [];
+  try {
+    const opLogColRef = collection(firestoreDb, 'stores_app', tenantId, 'operations_log');
+    const opLogSnap = await getDocs(opLogColRef);
+    opLogSnap.forEach((docSnap) => {
+      const logItem = docSnap.data();
+      if (logItem && logItem.operationType === 'DELETE' && logItem.entityType && logItem.entityId) {
+        if (!shieldedKeys.has(`${logItem.entityType}:${logItem.entityId}`)) {
+          deletions.push({
+            entityType: logItem.entityType,
+            entityId: logItem.entityId,
+            syncedAt: logItem.syncedAt,
+          });
+        }
+      }
+    });
+  } catch (_logErr) {
+    // operations_log opsional atau kosong pada inisialisasi awal
+  }
+  pulledData.deletions = deletions;
+
+  // Panggil callback lokal yang terdaftar (misal dari AppContext)
+  if (cloudUpdateHandler) {
+    try {
+      cloudUpdateHandler(pulledData);
+    } catch (cbErr) {
+      console.error('[SyncEngine] Error pada cloudUpdateHandler:', cbErr);
+    }
+  }
+
+  return {
+    ok: true,
+    totalPulled,
+    shieldedCount,
+    data: pulledData,
+  };
+}
+
+/**
+ * Pemicu Sinkronisasi Segera (Manual atau Reaktif saat Enqueue)
+ * Menjalankan PUSH (drain antrean lokal) dan dilanjutkan PULL (pembaruan dari cloud)
+ */
+export async function triggerSyncNow({ ownerUid, customDb, customFactory, domains } = {}) {
   const targetUid = ownerUid || syncState.activeOwnerUid;
   if (!targetUid) return { ok: false, reason: 'Belum terautentikasi' };
-  return await processQueueCycle(targetUid, { customDb, customFactory });
+
+  // 1. Push antrean lokal ke Cloud Firestore
+  const pushResult = await processQueueCycle(targetUid, { customDb, customFactory, domains });
+
+  // 2. Jika tidak offline, lakukan Pull pembaruan dari Cloud Firestore
+  let pullResult = null;
+  if (!pushResult.offline) {
+    try {
+      pullResult = await pullCloudUpdates(targetUid, { customDb, customFactory, domains });
+    } catch (pullErr) {
+      console.warn('[SyncEngine] Pull cloud updates error:', pullErr);
+    }
+  }
+
+  return {
+    ...pushResult,
+    pullResult,
+  };
 }
 
 /**
